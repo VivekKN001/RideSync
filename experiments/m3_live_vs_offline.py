@@ -3,6 +3,7 @@
     docker compose up -d kafka
     python experiments/m3_live_vs_offline.py                    # speeds 10x 30x 60x, 2 seeds
     python experiments/m3_live_vs_offline.py --speeds 30 --seeds 1 --hours 1
+    python experiments/m3_live_vs_offline.py --resume          # after an interruption
 
 For every seed:
 - offline: the discrete-event simulator (``simulate``)
@@ -62,6 +63,7 @@ def main():
     ap.add_argument("--travel", choices=["straight", "osrm"], default="straight")
     ap.add_argument("--slice", default=DEFAULT_SLICE)
     ap.add_argument("--bootstrap", default="localhost:9092")
+    ap.add_argument("--resume", action="store_true", help="skip runs already saved in the runs CSV")
     args = ap.parse_args()
 
     base = SimConfig(travel=travel_from_calibration(args.travel)).with_(**{
@@ -75,19 +77,37 @@ def main():
         "dispatch.max_candidates": 20,
     })
 
-    rows = []
+    RESULTS.mkdir(exist_ok=True)
+    tag = f"m3_{args.travel}"
+    runs_csv = RESULTS / f"{tag}_runs.csv"
+    # Every finished run is saved at once; --resume skips runs already in the CSV (a live seed takes ~40 min).
+    rows = pd.read_csv(runs_csv).to_dict("records") if args.resume and runs_csv.exists() else []
+    done = {(r["mode"], float(r["speed"]), int(r["seed"])) for r in rows}
+    if done:
+        print(f"resuming: {len(done)} run(s) already in {runs_csv.name}", flush=True)
+
+    def save(row):
+        rows.append(row)
+        pd.DataFrame(rows).to_csv(runs_csv, index=False)
+
     for seed in range(args.seeds):
         cfg = base.with_(seed=seed)
-        offline = summarize(simulate(cfg))
-        rows.append({"mode": "offline", "speed": 0.0, "seed": seed, **offline})
-        lock_sim, _ = run_lockstep(cfg)
-        lock = summarize(lock_sim)
-        same = all(lock[k] == offline[k] or (lock[k] != lock[k] and offline[k] != offline[k])
-                   for k in offline if not k.startswith("solve_ms"))
-        rows.append({"mode": "lockstep", "speed": 0.0, "seed": seed, "identical_to_offline": same, **lock})
-        print(f"seed {seed}: offline and lockstep {'IDENTICAL' if same else 'DIFFERENT'}", flush=True)
+        if ("offline", 0.0, seed) not in done or ("lockstep", 0.0, seed) not in done:
+            offline = summarize(simulate(cfg))
+            lock_sim, _ = run_lockstep(cfg)
+            lock = summarize(lock_sim)
+            same = all(lock[k] == offline[k] or (lock[k] != lock[k] and offline[k] != offline[k])
+                       for k in offline if not k.startswith("solve_ms"))
+            rows[:] = [r for r in rows if not (r["mode"] in ("offline", "lockstep") and r["seed"] == seed)]
+            save({"mode": "offline", "speed": 0.0, "seed": seed, **offline})
+            save({"mode": "lockstep", "speed": 0.0, "seed": seed, "identical_to_offline": same, **lock})
+            print(f"seed {seed}: offline and lockstep {'IDENTICAL' if same else 'DIFFERENT'}", flush=True)
+        offline = next(r for r in rows if r["mode"] == "offline" and r["seed"] == seed)
 
         for speed in args.speeds:
+            if ("live", speed, seed) in done:
+                print(f"seed {seed} @ {speed:g}x: already done, skipping", flush=True)
+                continue
             ensure_topics(args.bootstrap, prefix=PREFIX, recreate=True)
             matcher = start_matcher(args.bootstrap)
             t0 = time.time()
@@ -96,17 +116,14 @@ def main():
                 matcher.wait(timeout=60)
             except subprocess.TimeoutExpired:
                 matcher.kill()
-            rows.append({"mode": "live", "speed": speed, "seed": seed, **metrics, **diag})
+            save({"mode": "live", "speed": speed, "seed": seed, **metrics, **diag})
             print(f"seed {seed} @ {speed:g}x: {time.time() - t0:.0f}s wall, "
                   f"cancel {metrics['cancel_rate']:.3f} (offline {offline['cancel_rate']:.3f}), "
                   f"offer delay {diag['offer_delay_mean_s']:.2f}s sim, "
                   f"transit p50 {diag['offer_transit_ms_p50']:.1f} ms", flush=True)
 
     df = pd.DataFrame(rows)
-    RESULTS.mkdir(exist_ok=True)
-    tag = f"m3_{args.travel}"
-    df.to_csv(RESULTS / f"{tag}_runs.csv", index=False)
-
+    df = df[df["seed"] < args.seeds]
     off = df[df["mode"] == "offline"].set_index("seed")
     lines = [
         "# M3: live over Kafka vs offline, same config and seeds", "",

@@ -97,6 +97,34 @@ predictability per batch, not throughput.
 
 ---
 
+# M3: live over Kafka vs offline
+
+`experiments/m3_live_vs_offline.py`, `results/m3_straight_report.md`. Same config as M2 (3 h Manhattan slice, 500
+drivers, optimal every 30 s, cancellation-aware cost, straight-line travel), 2 seeds, deltas paired per seed.
+The simulator and a separate matcher process talk over Kafka, paced at N simulated seconds per wall second, so a
+wall-clock delay of d costs d × N simulated seconds. Higher speeds magnify latency. A real deployment runs at 1×.
+
+**Lockstep == offline.** The live code over a zero-latency in-memory bus is identical to the offline simulator
+for both seeds, so any difference below comes only from latency.
+
+| mode | cancel % | Δ cancel pp | wait_all s | Δ wait_all s | time to match s | Δ trips/h |
+|---|---|---|---|---|---|---|
+| offline | 3.92 | — | 181.3 | — | 17.9 | — |
+| live 10× | 3.77 | −0.14 | 182.7 | +1.4 | 18.6 | +1.6 |
+| live 30× | 3.88 | −0.04 | 183.1 | +1.9 | 19.9 | +0.4 |
+| live 60× | 3.81 | −0.11 | 185.5 | +4.2 | 21.4 | +1.2 |
+
+**Going live costs a few seconds of wait and nothing else.** The wait grows with speed (+1.4 → +4.2 s), and it
+tracks the offer delay (0.6 / 2.0 / 4.4 sim s at 10× / 30× / 60×). Cancel rate and trips/h move within noise, the
+number of batches is identical, and almost no offers are rejected for stale state (≤ 0.03%).
+
+**The pipeline itself is fast and constant in wall time.** From tick to solved batch takes 15–22 ms p50 (≤ 53 ms
+p99), and an offer takes 27–38 ms p50 (≤ 52 ms p99) to reach the simulator, at every speed. Only the conversion
+to simulated seconds changes. At 1× that is well under 0.1 s of delay against a 30 s batch window, so a real-time
+deployment should match the offline numbers.
+
+---
+
 # M4: stream features (PyFlink) and late events
 
 The Flink job (`ridesync/stream/job.py`) turns `rider-events` + `driver-events` into per-zone, per-minute features
