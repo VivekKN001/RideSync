@@ -224,6 +224,7 @@ class Matcher:
             "drivers": len(batch.driver_ids), "offers": len(result.pairs), "solve_ms": result.solve_ms,
             "cost": result.cost, "shadow_cost": result.shadow_cost, "skipped": self.skipped,
             "tick_lag_ms": None if tick_sent is None else (time.time() - tick_sent) * 1000,
+            "ts": int(time.time() * 1000),
         })
         head["wall"] = time.time()
         for rid, did, eta_s in result.pairs:

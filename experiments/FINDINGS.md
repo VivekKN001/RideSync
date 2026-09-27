@@ -68,5 +68,57 @@ With 30 s batches, greedy's batch solution is strictly worse in 27–44% of batc
 each. That's a real edge, but small (≈0.3–0.6% more trips). The large effects still come from batching and the
 cancellation-aware objective (e.g. 300 drivers: −6 pp cancellations, +69 trips/h vs immediate greedy).
 
-**Next:** the same experiment on OSRM road times (`--travel osrm`), to test whether one-way streets, bridges and
-the river edges widen the optimal-vs-greedy gap further.
+## M2 on OSRM road times
+
+Same demand, seeds and arms, with travel times from OSRM on the NYC road network × 2.09 (fitted so OSRM matches
+observed TLC trip times). Full tables: `results/m2_osrm_report.md`.
+
+**Road times did not widen the optimal-vs-greedy gap. They erased it at the trip level.** Paired optimal − greedy,
+@30s cancellation-aware, 6 seeds (t-interval over paired seeds):
+
+| | 300 drivers | 350 | 400 | 450 | 500 |
+|---|---|---|---|---|---|
+| trips/h | +0.7 ± 6.2 | +2.1 ± 2.5 | +2.3 ± 6.7 | +0.2 ± 5.1 | +3.3 ± 2.2 |
+| cancel pp | −0.1 ± 0.5 | −0.2 ± 0.2 | −0.2 ± 0.6 | −0.0 ± 0.5 | −0.3 ± 0.2 |
+
+Batch by batch, greedy is still worse in 30–41% of 30 s batches, by 24–46 s of pickup time: about the same share
+as with straight-line times. The saving is real per batch, but it doesn't turn into trips: a few seconds of pickup
+disappear against 4–6.5 minute pickups on real roads.
+
+**Batching and the cancellation-aware objective still matter, but less.** At 300 drivers, @30s aware vs immediate
+greedy: −3.8 pp cancellations and +43 trips/h (straight-line: −6.5 pp, +74). The gain shrinks as the fleet grows and
+is gone by 450 drivers. Road pickups are slower than the straight-line model predicts (immediate greedy, 500 drivers:
+231 s vs 164 s for Uber), so the same fleet is scarcer, and a longer pickup leaves less for a batch to save.
+
+**Updated framing:** "Batched, cancellation-aware dispatch gives −4 pp cancellations and +5% trips/h over
+immediate nearest-driver under scarcity on real Manhattan roads. The optimal assignment beats greedy in a third of
+batches, but on trips/h it's within noise (≤ 0.3%)." The case for the Hungarian solver is correctness and
+predictability per batch, not throughput.
+
+---
+
+# M4: stream features (PyFlink) and late events
+
+The Flink job (`ridesync/stream/job.py`) turns `rider-events` + `driver-events` into per-zone, per-minute features
+(requests, matches, cancellations, completed trips, free drivers, average wait and pickup ETA) on
+`zone-features`. Events that arrive after the watermark go to `late-events`. The logic is plain Python in
+`ridesync/stream/features.py`, and Flink only runs it.
+
+**Flink == reference.** On a live run, every row Flink produced that has counts is identical to the reference
+runner's. Flink adds ~48 empty rows: single minutes with no events, between two active minutes of the same zone
+(it fills gaps, the reference skips them). This quirk is harmless.
+
+**How long to wait for late events** (`experiments/m4_lateness.py`, `results/m4_lateness_report.md`). A 3 h run
+with 20% of events delayed like a phone network (lognormal, p50 0.3 s, p99 3 s, max 12 s):
+
+| allowance | late events | requests missing from counts | row delay after minute ends |
+|---|---|---|---|
+| 0 s | 0.10% | 0.12% | 0 s |
+| 0.25–1 s | 0.01% | 0.03% | 1 s |
+| 2 s | 0.01% | 0.03% | 2 s |
+| 5 s | 0.00% | 0.00% | 5 s |
+
+Delays are quantised to the simulator's 1 s tick. Even zero allowance loses only 0.1% of events, because only the
+tail of a 20% slice arrives after the next tick. A 1 s allowance cuts the loss 10×, at a cost of 1 s. Going past
+that buys almost nothing until 5 s. The job defaults to 2 s (`--lateness-ms`) as a margin for real networks that
+are worse than this model. Nothing is silently dropped either way: the rest lands on `late-events`.

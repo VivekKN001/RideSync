@@ -1,0 +1,25 @@
+apiVersion: 1
+datasources:
+  - name: ClickHouse
+    uid: clickhouse
+    type: grafana-clickhouse-datasource
+    isDefault: true
+    jsonData:
+      host: clickhouse
+      port: 9000
+      protocol: native
+      username: ridesync
+      defaultDatabase: ridesync
+    secureJsonData:
+      password: ridesync
+  - name: Postgres
+    uid: postgres
+    type: grafana-postgresql-datasource
+    url: postgres:5432
+    user: ridesync
+    jsonData:
+      database: ridesync
+      sslmode: disable
+      postgresVersion: 1600
+    secureJsonData:
+      password: ridesync

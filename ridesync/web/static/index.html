@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RideSync Live Map</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600&family=Public+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<style>
+  :root {
+    --ground: #eef1f0; --surface: rgba(250, 251, 250, 0.94); --ink: #15191c; --ink-2: #4c565e; --ink-3: #6f7a82;
+    --rule: #cfd6d6; --idle: #8b949c; --enroute: #eda100; --ontrip: #4a3aa7; --waiting: #e87ba4; --cancel: #e34948;
+    --pressure: #eb6834;
+    --display: "Barlow Condensed", "Arial Narrow", sans-serif; --body: "Public Sans", "Segoe UI", system-ui, sans-serif;
+  }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--ground); color: var(--ink); font: 14px/1.45 var(--body); font-variant-numeric: tabular-nums; }
+  #map { position: absolute; inset: 0; }
+  .panel {
+    position: absolute; top: 16px; left: 16px; width: min(300px, calc(100% - 32px)); z-index: 2;
+    background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 16px;
+    display: grid; gap: 12px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.12);
+  }
+  .eyebrow { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; }
+  h1 { font: 600 26px/1 var(--display); margin: 2px 0 0; }
+  .run { font-size: 12px; color: var(--ink-3); word-break: break-all; }
+  .clock { font: 600 44px/1 var(--display); }
+  .clock small { font-size: 14px; color: var(--ink-3); font-weight: 500; margin-left: 6px; font-family: var(--body); }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; }
+  .stat b { display: block; font: 600 22px/1.05 var(--display); }
+  .stat span { font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-3); }
+  .legend { display: grid; gap: 5px; font-size: 13px; color: var(--ink-2); }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; vertical-align: -1px;
+              border: 1px solid rgba(21, 25, 28, 0.5); }
+  .ramp { height: 8px; border-radius: 4px; background: linear-gradient(90deg, rgba(235,104,52,0.05), rgba(235,104,52,0.75)); }
+  .ramp-labels { display: flex; justify-content: space-between; font-size: 11px; color: var(--ink-3); }
+  .links { display: flex; gap: 14px; font-size: 13px; }
+  a { color: var(--ink); }
+  .status { font-size: 13px; color: var(--ink-2); }
+  @media (max-width: 520px) { .panel { padding: 10px 12px; gap: 8px; } .clock { font-size: 34px; } }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<aside class="panel" aria-live="polite">
+  <div>
+    <div class="eyebrow">RideSync · live</div>
+    <h1>Manhattan dispatch</h1>
+    <div class="run" id="run">Waiting for a run…</div>
+  </div>
+  <div class="clock" id="clock">--:--<small>simulated</small></div>
+  <div class="stats">
+    <div class="stat"><b id="waiting">0</b><span>Waiting now</span></div>
+    <div class="stat"><b id="drivers">0 / 0</b><span>Free / all drivers</span></div>
+    <div class="stat"><b id="completed">0</b><span>Trips done</span></div>
+    <div class="stat"><b id="cancelled">0</b><span>Cancelled</span></div>
+  </div>
+  <div class="legend">
+    <div><i style="background:var(--idle)"></i>Driver, free</div>
+    <div><i style="background:var(--enroute)"></i>Driving to a pickup (line to the rider)</div>
+    <div><i style="background:var(--ontrip)"></i>Carrying a passenger</div>
+    <div><i style="background:var(--waiting); width:12px; height:12px"></i>Rider waiting for a match</div>
+    <div><i style="background:var(--cancel)"></i>Rider cancelled (fades out)</div>
+  </div>
+  <div>
+    <div class="eyebrow" style="margin-bottom:4px">Zone shading: requests per free driver, last closed minute (Flink)</div>
+    <div class="ramp"></div>
+    <div class="ramp-labels"><span>0</span><span>1.5</span><span>3+</span></div>
+  </div>
+  <div class="links"><a href="__GRAFANA__" target="_blank" rel="noopener">Grafana dashboard</a><a href="http://localhost:8081" target="_blank" rel="noopener">Flink UI</a></div>
+  <div class="status" id="status">Connecting…</div>
+</aside>
+
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/deck.gl@9.0.38/dist.min.js"></script>
+<script>
+(function () {
+  const COLORS = {
+    idle: [139, 148, 156], enroute: [237, 161, 0], ontrip: [74, 58, 167], waiting: [232, 123, 164],
+    cancel: [227, 73, 72], edge: [21, 25, 28, 140], pressure: [235, 104, 52],
+  };
+  const STATE = [COLORS.idle, COLORS.enroute, COLORS.ontrip];
+  const VIEW = { longitude: -73.978, latitude: 40.760, zoom: 11.85, bearing: 29, pitch: 0 };  // Manhattan grid north
+  const $ = (id) => document.getElementById(id);
+  const fmt = new Intl.NumberFormat("en-US");
+  let zones = null, frame = null, overlay = null, deckgl = null;
+
+  function layers() {
+    const f = frame || { drivers: [], waiting: [], cancels: [], zones: {} };
+    const pressure = f.zones || {};
+    return [
+      new deck.GeoJsonLayer({
+        id: "zones", data: zones || { type: "FeatureCollection", features: [] },
+        filled: true, stroked: true, lineWidthMinPixels: 0.6, getLineColor: [120, 130, 135, 90],
+        getFillColor: (z) => {
+          const r = pressure[String(z.properties.id)];
+          return r === undefined ? [0, 0, 0, 0] : [...COLORS.pressure, Math.round(12 + Math.min(r / 3, 1) * 180)];
+        },
+        updateTriggers: { getFillColor: [f.t] }, pickable: true,
+      }),
+      new deck.LineLayer({
+        id: "to-pickup", data: f.drivers.filter((d) => d[3] === 1 && d[4] !== null),
+        getSourcePosition: (d) => [d[2], d[1]], getTargetPosition: (d) => [d[5], d[4]],
+        getColor: [...COLORS.enroute, 210], getWidth: 1.5, widthUnits: "pixels",
+      }),
+      new deck.ScatterplotLayer({
+        id: "cancels", data: f.cancels, getPosition: (c) => [c[1], c[0]], radiusUnits: "pixels", getRadius: 5,
+        getFillColor: (c) => [...COLORS.cancel, Math.round(255 * (1 - c[2]))], updateTriggers: { getFillColor: [f.t] },
+      }),
+      new deck.ScatterplotLayer({
+        id: "waiting", data: f.waiting, getPosition: (w) => [w[1], w[0]], radiusUnits: "pixels", getRadius: 6,
+        getFillColor: COLORS.waiting, stroked: true, getLineColor: COLORS.edge, lineWidthUnits: "pixels", getLineWidth: 1,
+      }),
+      new deck.ScatterplotLayer({
+        id: "drivers", data: f.drivers.filter((d) => d[1] !== 0), getPosition: (d) => [d[2], d[1]],
+        radiusUnits: "pixels", getRadius: (d) => (d[3] === 0 ? 3 : 4), getFillColor: (d) => STATE[d[3]],
+        stroked: true, getLineColor: COLORS.edge, lineWidthUnits: "pixels", getLineWidth: 0.8,
+        updateTriggers: { getFillColor: [f.t], getRadius: [f.t] },
+      }),
+    ];
+  }
+  const tooltip = ({ object, layer }) =>
+    layer && layer.id === "zones" && object ? `${object.properties.name}` : null;
+
+  function render() {
+    if (overlay) overlay.setProps({ layers: layers() });
+    else if (deckgl) deckgl.setProps({ layers: layers() });
+  }
+
+  function start() {
+    try {
+      const map = new maplibregl.Map({
+        container: "map", style: "https://tiles.openfreemap.org/styles/positron",
+        center: [VIEW.longitude, VIEW.latitude], zoom: VIEW.zoom, bearing: VIEW.bearing, attributionControl: { compact: true },
+      });
+      overlay = new deck.MapboxOverlay({ interleaved: false, layers: layers(), getTooltip: tooltip });
+      map.addControl(overlay);
+      map.addControl(new maplibregl.NavigationControl({ visualizePitch: false }), "top-right");
+    } catch (e) {
+      // No basemap (offline): deck.gl alone, the taxi zones are the map.
+      deckgl = new deck.Deck({ parent: $("map"), initialViewState: VIEW, controller: true, layers: layers(), getTooltip: tooltip });
+    }
+  }
+
+  function clock(t) {
+    const s = 17 * 3600 + Math.floor(t);
+    return `${String(Math.floor(s / 3600) % 24).padStart(2, "0")}:${String(Math.floor(s / 60) % 60).padStart(2, "0")}`;
+  }
+
+  function connect() {
+    const ws = new WebSocket(`ws://${location.host}/ws`);
+    ws.onopen = () => ($("status").textContent = "Connected. Updates 4 times a second.");
+    ws.onclose = () => { $("status").textContent = "Disconnected. Retrying…"; setTimeout(connect, 1500); };
+    ws.onmessage = (e) => {
+      frame = JSON.parse(e.data);
+      if (!frame.run) { $("run").textContent = "Waiting for a run… start one with python -m ridesync.live.sim"; return; }
+      $("run").textContent = `Run ${frame.run}${frame.ended ? " (finished)" : ""}`;
+      $("clock").innerHTML = `${clock(frame.t)}<small>simulated</small>`;
+      const free = frame.drivers.filter((d) => d[3] === 0).length;
+      $("waiting").textContent = fmt.format(frame.waiting.length);
+      $("drivers").textContent = `${fmt.format(free)} / ${fmt.format(frame.drivers.length)}`;
+      $("completed").textContent = fmt.format(frame.counts.completed);
+      $("cancelled").textContent = fmt.format(frame.counts.cancelled);
+      render();
+    };
+  }
+
+  fetch("/zones.geojson").then((r) => r.json()).then((g) => { zones = g; render(); });
+  start();
+  connect();
+})();
+</script>
+</body>
+</html>

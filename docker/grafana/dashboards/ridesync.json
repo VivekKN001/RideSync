@@ -1,0 +1,701 @@
+{
+ "uid": "ridesync-live",
+ "title": "RideSync live",
+ "tags": [
+  "ridesync"
+ ],
+ "timezone": "browser",
+ "schemaVersion": 39,
+ "version": 1,
+ "editable": true,
+ "refresh": "5s",
+ "time": {
+  "from": "now-30m",
+  "to": "now"
+ },
+ "templating": {
+  "list": [
+   {
+    "name": "run",
+    "label": "Run",
+    "type": "query",
+    "datasource": {
+     "type": "grafana-clickhouse-datasource",
+     "uid": "clickhouse"
+    },
+    "query": "SELECT r FROM (SELECT 'latest' AS r, toInt64(9e18) AS k UNION ALL SELECT run, max(started_ms) FROM run_markers WHERE kind = 'run_start' GROUP BY run) ORDER BY k DESC",
+    "definition": "SELECT r FROM (SELECT 'latest' AS r, toInt64(9e18) AS k UNION ALL SELECT run, max(started_ms) FROM run_markers WHERE kind = 'run_start' GROUP BY run) ORDER BY k DESC",
+    "refresh": 2,
+    "sort": 0,
+    "current": {
+     "text": "latest",
+     "value": "latest"
+    }
+   }
+  ]
+ },
+ "panels": [
+  {
+   "type": "stat",
+   "title": "Simulated clock",
+   "description": "Replays start at 17:00 on 13 March 2024.",
+   "datasource": {
+    "type": "grafana-clickhouse-datasource",
+    "uid": "clickhouse"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-clickhouse-datasource",
+      "uid": "clickhouse"
+     },
+     "editorType": "sql",
+     "rawSql": "SELECT formatDateTime(toDateTime('2024-03-13 17:00:00') + toIntervalSecond(toInt32(max(t))), '%H:%i') AS clock FROM rider_events WHERE run = (SELECT if('${run}' = 'latest', argMax(run, started_ms), '${run}') FROM run_markers WHERE kind = 'run_start')",
+     "format": 1,
+     "queryType": "table"
+    }
+   ],
+   "options": {
+    "colorMode": "none",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none"
+    },
+    "overrides": []
+   }
+  },
+  {
+   "type": "stat",
+   "title": "Ride requests",
+   "description": "",
+   "datasource": {
+    "type": "grafana-clickhouse-datasource",
+    "uid": "clickhouse"
+   },
+   "gridPos": {
+    "x": 4,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-clickhouse-datasource",
+      "uid": "clickhouse"
+     },
+     "editorType": "sql",
+     "rawSql": "SELECT countIf(type = 'requested') AS requests FROM rider_events WHERE run = (SELECT if('${run}' = 'latest', argMax(run, started_ms), '${run}') FROM run_markers WHERE kind = 'run_start')",
+     "format": 1,
+     "queryType": "table"
+    }
+   ],
+   "options": {
+    "colorMode": "none",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none"
+    },
+    "overrides": []
+   }
+  },
+  {
+   "type": "stat",
+   "title": "Trips completed",
+   "description": "",
+   "datasource": {
+    "type": "grafana-clickhouse-datasource",
+    "uid": "clickhouse"
+   },
+   "gridPos": {
+    "x": 8,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-clickhouse-datasource",
+      "uid": "clickhouse"
+     },
+     "editorType": "sql",
+     "rawSql": "SELECT countIf(type = 'dropped_off') AS completed FROM rider_events WHERE run = (SELECT if('${run}' = 'latest', argMax(run, started_ms), '${run}') FROM run_markers WHERE kind = 'run_start')",
+     "format": 1,
+     "queryType": "table"
+    }
+   ],
+   "options": {
+    "colorMode": "none",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none"
+    },
+    "overrides": []
+   }
+  },
+  {
+   "type": "stat",
+   "title": "Riders who cancelled",
+   "description": "",
+   "datasource": {
+    "type": "grafana-clickhouse-datasource",
+    "uid": "clickhouse"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-clickhouse-datasource",
+      "uid": "clickhouse"
+     },
+     "editorType": "sql",
+     "rawSql": "SELECT countIf(type = 'cancelled') / greatest(countIf(type = 'requested'), 1) AS cancel_rate FROM rider_events WHERE run = (SELECT if('${run}' = 'latest', argMax(run, started_ms), '${run}') FROM run_markers WHERE kind = 'run_start')",
+     "format": 1,
+     "queryType": "table"
+    }
+   ],
+   "options": {
+    "colorMode": "none",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percentunit",
+     "decimals": 1
+    },
+    "overrides": []
+   }
+  },
+  {
+   "type": "stat",
+   "title": "Waiting at the last batch",
+   "description": "Riders the matcher considered in its most recent batch.",
+   "datasource": {
+    "type": "grafana-clickhouse-datasource",
+    "uid": "clickhouse"
+   },
+   "gridPos": {
+    "x": 16,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-clickhouse-datasource",
+      "uid": "clickhouse"
+     },
+     "editorType": "sql",
+     "rawSql": "SELECT riders FROM dispatch_batches WHERE run = (SELECT if('${run}' = 'latest', argMax(run, started_ms), '${run}') FROM run_markers WHERE kind = 'run_start') ORDER BY batch_t DESC LIMIT 1",
+     "format": 1,
+     "queryType": "table"
+    }
+   ],
+   "options": {
+    "colorMode": "none",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none"
+    },
+    "overrides": []
+   }
+  },
+  {
+   "type": "stat",
+   "title": "Average quoted pickup",
+   "description": "",
+   "datasource": {
+    "type": "grafana-clickhouse-datasource",
+    "uid": "clickhouse"
+   },
+   "gridPos": {
+    "x": 20,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-clickhouse-datasource",
+      "uid": "clickhouse"
+     },
+     "editorType": "sql",
+     "rawSql": "SELECT avgIf(quoted_eta_s, type = 'matched') AS quoted FROM rider_events WHERE run = (SELECT if('${run}' = 'latest', argMax(run, started_ms), '${run}') FROM run_markers WHERE kind = 'run_start')",
+     "format": 1,
+     "queryType": "table"
+    }
+   ],
+   "options": {
+    "colorMode": "none",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "decimals": 0
+    },
+    "overrides": []
+   }
+  },
+  {
+   "type": "timeseries",
+   "title": "Demand and outcomes per simulated minute (from Flink)",
+   "description": "Per-minute totals across all zones, computed by the Flink job; a minute appears once it closes.",
+   "datasource": {
+    "type": "grafana-clickhouse-datasource",
+    "uid": "clickhouse"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 4,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-clickhouse-datasource",
+      "uid": "clickhouse"
+     },
+     "editorType": "sql",
+     "rawSql": "SELECT max(ts) AS time, sum(requests) AS Requests, sum(matches) AS Matches, sum(cancels_no_match + cancels_eta) AS Cancellations FROM zone_features FINAL WHERE run = (SELECT if('${run}' = 'latest', argMax(run, started_ms), '${run}') FROM run_markers WHERE kind = 'run_start') GROUP BY minute ORDER BY time",
+     "format": 0,
+     "queryType": "timeseries"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "showPoints": "never",
+      "stacking": {
+       "mode": "none"
+      }
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   }
+  },
+  {
+   "type": "timeseries",
+   "title": "Riders waiting vs drivers available, per batch",
+   "description": "",
+   "datasource": {
+    "type": "grafana-clickhouse-datasource",
+    "uid": "clickhouse"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 4,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-clickhouse-datasource",
+      "uid": "clickhouse"
+     },
+     "editorType": "sql",
+     "rawSql": "SELECT ts AS time, riders AS `Riders waiting`, drivers AS `Drivers available` FROM dispatch_batches WHERE run = (SELECT if('${run}' = 'latest', argMax(run, started_ms), '${run}') FROM run_markers WHERE kind = 'run_start') ORDER BY ts",
+     "format": 0,
+     "queryType": "timeseries"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "showPoints": "never",
+      "stacking": {
+       "mode": "none"
+      }
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   }
+  },
+  {
+   "type": "timeseries",
+   "title": "Offer outcomes (per 10 s)",
+   "description": "",
+   "datasource": {
+    "type": "grafana-clickhouse-datasource",
+    "uid": "clickhouse"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 12,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-clickhouse-datasource",
+      "uid": "clickhouse"
+     },
+     "editorType": "sql",
+     "rawSql": "SELECT toStartOfInterval(ts, INTERVAL 10 SECOND) AS time, countIf(outcome = 'accepted') AS Accepted, countIf(outcome = 'declined') AS `Declined by driver`, countIf(outcome = 'quote_cancelled') AS `Rider refused ETA`, countIf(outcome = 'rejected') AS `Rejected as stale` FROM offer_responses WHERE run = (SELECT if('${run}' = 'latest', argMax(run, started_ms), '${run}') FROM run_markers WHERE kind = 'run_start') GROUP BY time ORDER BY time",
+     "format": 0,
+     "queryType": "timeseries"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "custom": {
+      "drawStyle": "bars",
+      "lineWidth": 2,
+      "fillOpacity": 12,
+      "showPoints": "never",
+      "stacking": {
+       "mode": "normal"
+      }
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   }
+  },
+  {
+   "type": "timeseries",
+   "title": "Matcher: solve time and tick-to-batch latency",
+   "description": "",
+   "datasource": {
+    "type": "grafana-clickhouse-datasource",
+    "uid": "clickhouse"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 12,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-clickhouse-datasource",
+      "uid": "clickhouse"
+     },
+     "editorType": "sql",
+     "rawSql": "SELECT ts AS time, solve_ms AS `Solve (ms)`, tick_lag_ms AS `Tick to solved (ms)` FROM dispatch_batches WHERE run = (SELECT if('${run}' = 'latest', argMax(run, started_ms), '${run}') FROM run_markers WHERE kind = 'run_start') ORDER BY ts",
+     "format": 0,
+     "queryType": "timeseries"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "ms",
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "showPoints": "never",
+      "stacking": {
+       "mode": "none"
+      }
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   }
+  },
+  {
+   "type": "table",
+   "title": "Zones under pressure, last 5 closed minutes",
+   "description": "Requests per free driver is the raw signal a surge-pricing policy (M6) would act on.",
+   "datasource": {
+    "type": "grafana-clickhouse-datasource",
+    "uid": "clickhouse"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 20,
+    "w": 12,
+    "h": 9
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-clickhouse-datasource",
+      "uid": "clickhouse"
+     },
+     "editorType": "sql",
+     "rawSql": "SELECT z.name AS Zone, sum(f.requests) AS Requests, sum(f.matches) AS Matches, sum(f.cancels_no_match + f.cancels_eta) AS Cancelled, argMax(f.idle_end, f.minute) AS `Free drivers`, round(sum(f.requests) / (argMax(f.idle_end, f.minute) + 1), 2) AS `Demand per free driver` FROM zone_features AS f FINAL LEFT JOIN zones AS z ON z.id = f.zone WHERE f.run = (SELECT if('${run}' = 'latest', argMax(run, started_ms), '${run}') FROM run_markers WHERE kind = 'run_start') AND f.minute + 5 > (SELECT max(minute) FROM zone_features WHERE run = (SELECT if('${run}' = 'latest', argMax(run, started_ms), '${run}') FROM run_markers WHERE kind = 'run_start')) GROUP BY z.name ORDER BY `Demand per free driver` DESC LIMIT 15",
+     "format": 1,
+     "queryType": "table"
+    }
+   ],
+   "options": {
+    "showHeader": true,
+    "cellHeight": "sm"
+   },
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   }
+  },
+  {
+   "type": "stat",
+   "title": "Late events (Flink)",
+   "description": "Events that arrived after their minute had already closed; reported, not counted.",
+   "datasource": {
+    "type": "grafana-clickhouse-datasource",
+    "uid": "clickhouse"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 20,
+    "w": 6,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-clickhouse-datasource",
+      "uid": "clickhouse"
+     },
+     "editorType": "sql",
+     "rawSql": "SELECT count() AS late FROM late_events WHERE run = (SELECT if('${run}' = 'latest', argMax(run, started_ms), '${run}') FROM run_markers WHERE kind = 'run_start')",
+     "format": 1,
+     "queryType": "table"
+    }
+   ],
+   "options": {
+    "colorMode": "none",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none"
+    },
+    "overrides": []
+   }
+  },
+  {
+   "type": "stat",
+   "title": "Batches skipped by the matcher",
+   "description": "",
+   "datasource": {
+    "type": "grafana-clickhouse-datasource",
+    "uid": "clickhouse"
+   },
+   "gridPos": {
+    "x": 18,
+    "y": 20,
+    "w": 6,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-clickhouse-datasource",
+      "uid": "clickhouse"
+     },
+     "editorType": "sql",
+     "rawSql": "SELECT max(skipped) AS skipped FROM dispatch_batches WHERE run = (SELECT if('${run}' = 'latest', argMax(run, started_ms), '${run}') FROM run_markers WHERE kind = 'run_start')",
+     "format": 1,
+     "queryType": "table"
+    }
+   ],
+   "options": {
+    "colorMode": "none",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none"
+    },
+    "overrides": []
+   }
+  },
+  {
+   "type": "table",
+   "title": "Trip ledger (Postgres), latest updates",
+   "description": "",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "postgres"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 29,
+    "w": 16,
+    "h": 9
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "postgres"
+     },
+     "format": "table",
+     "rawQuery": true,
+     "editorMode": "code",
+     "rawSql": "SELECT rider_id AS \"Rider\", status AS \"Status\", driver_id AS \"Driver\", round((quoted_eta_s / 60)::numeric, 1) AS \"Quoted pickup (min)\", round(((coalesce(matched_s, finished_s) - requested_s) / 60)::numeric, 1) AS \"Min to match or cancel\", cancel_reason AS \"Cancel reason\", updated_at AS \"Updated\" FROM trips WHERE run_id = CASE WHEN '${run}' = 'latest' THEN (SELECT run_id FROM runs ORDER BY started_at DESC NULLS LAST LIMIT 1) ELSE '${run}' END ORDER BY updated_at DESC LIMIT 25"
+    }
+   ],
+   "options": {
+    "showHeader": true,
+    "cellHeight": "sm"
+   },
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   }
+  },
+  {
+   "type": "table",
+   "title": "Trips by status (Postgres)",
+   "description": "",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "postgres"
+   },
+   "gridPos": {
+    "x": 16,
+    "y": 29,
+    "w": 8,
+    "h": 9
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "postgres"
+     },
+     "format": "table",
+     "rawQuery": true,
+     "editorMode": "code",
+     "rawSql": "SELECT status AS \"Status\", count(*) AS \"Trips\" FROM trips WHERE run_id = CASE WHEN '${run}' = 'latest' THEN (SELECT run_id FROM runs ORDER BY started_at DESC NULLS LAST LIMIT 1) ELSE '${run}' END GROUP BY status ORDER BY trip_rank(status), status"
+    }
+   ],
+   "options": {
+    "showHeader": true,
+    "cellHeight": "sm"
+   },
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   }
+  }
+ ]
+}

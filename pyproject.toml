@@ -13,6 +13,8 @@ dependencies = ["numpy>=1.24", "scipy>=1.10"]
 [project.optional-dependencies]
 dev = ["pytest>=7"]
 live = ["confluent-kafka>=2.5"]
+# M5 host services: Postgres trip-ledger sink and the live map server. (Flink runs in Docker.)
+web = ["confluent-kafka>=2.5", "psycopg[binary]>=3.2", "fastapi>=0.110", "uvicorn[standard]>=0.29"]
 
 [tool.setuptools.packages.find]
 include = ["ridesync*"]

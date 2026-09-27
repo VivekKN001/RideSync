@@ -1,9 +1,9 @@
 # RideSync stack. Services are added milestone by milestone; see README.
 #
-# M2 (routing):
+# M2 (routing, on demand: live demos use the fitted straight-line model):
 #   python -m ridesync.data.fetch --osm          # NYC road network extract -> data/osm/nyc.osm.pbf
 #   docker compose --profile prep run --rm osrm-prep   # one-off preprocessing (~5 min, ~3 GB RAM)
-#   docker compose up -d osrm
+#   docker compose --profile routing up -d osrm
 #   curl "http://localhost:5000/route/v1/driving/-73.9855,40.7580;-74.0110,40.7069"
 
 #
@@ -12,8 +12,30 @@
 #   python -m ridesync.live.topics                    # once; the services also create topics on start
 #   python -m ridesync.live.matcher                   # terminal 1
 #   python -m ridesync.live.sim --speed 10            # terminal 2
+#
+# M4 (stream features, Flink UI on http://localhost:8081):
+#   docker build -t ridesync-flink:1.20 docker/flink   # once
+#   python -m ridesync.stream.zones                   # once: data/processed/taxi_zones.json
+#   docker compose up -d flink-jobmanager flink-taskmanager
+#   docker compose run --rm flink-submit              # submits ridesync/stream/job.py
 
 x-osrm-image: &osrm-image ghcr.io/project-osrm/osrm-backend:v6.0.0
+
+x-flink-properties: &flink-properties |
+  jobmanager.rpc.address: flink-jobmanager
+  jobmanager.memory.process.size: 800m
+  taskmanager.memory.process.size: 1600m
+  taskmanager.memory.managed.fraction: 0.25
+  taskmanager.numberOfTaskSlots: 2
+  parallelism.default: 2
+  state.checkpoints.dir: file:///opt/flink/checkpoints
+  python.executable: python3
+  python.client.executable: python3
+
+x-flink-volumes: &flink-volumes
+  - ./ridesync:/opt/ridesync/ridesync:ro
+  - ./data/processed:/opt/data:ro
+  - flink-checkpoints:/opt/flink/checkpoints
 
 services:
   kafka:
@@ -60,6 +82,7 @@ services:
 
   osrm:
     image: *osrm-image
+    profiles: ["routing"]
     command: >
       osrm-routed --algorithm mld --max-table-size 1000 --threads 8 /data/nyc.osrm
     volumes:
@@ -69,5 +92,97 @@ services:
     mem_limit: 2g
     restart: unless-stopped
 
+  flink-jobmanager:
+    image: ridesync-flink:1.20
+    command: jobmanager
+    ports:
+      - "8081:8081"
+    environment:
+      FLINK_PROPERTIES: *flink-properties
+    volumes: *flink-volumes
+    mem_limit: 900m
+    restart: unless-stopped
+
+  flink-taskmanager:
+    image: ridesync-flink:1.20
+    command: taskmanager
+    depends_on: [flink-jobmanager]
+    environment:
+      FLINK_PROPERTIES: *flink-properties
+    volumes: *flink-volumes
+    mem_limit: 1700m
+    restart: unless-stopped
+
+  flink-submit:
+    # One-off: submits the PyFlink job to the running cluster, detached. Extra args go to the job.
+    image: ridesync-flink:1.20
+    profiles: ["submit"]
+    depends_on: [flink-jobmanager]
+    environment:
+      FLINK_PROPERTIES: *flink-properties
+    volumes: *flink-volumes
+    entrypoint: ["flink", "run", "-d", "-m", "flink-jobmanager:8081", "-py", "/opt/ridesync/ridesync/stream/job.py"]
+
+  clickhouse:
+    # Event history and time series. Reads the Kafka topics itself (docker/clickhouse/init).
+    image: clickhouse/clickhouse-server:24.8
+    ports:
+      - "8123:8123"
+    environment:
+      CLICKHOUSE_DB: ridesync
+      CLICKHOUSE_USER: ridesync
+      CLICKHOUSE_PASSWORD: ridesync
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./docker/clickhouse/init:/docker-entrypoint-initdb.d:ro
+      - ./docker/clickhouse/config.d/ridesync.xml:/etc/clickhouse-server/config.d/ridesync.xml:ro
+      - ./data/raw/taxi_zone_lookup.csv:/var/lib/clickhouse/user_files/taxi_zone_lookup.csv:ro
+    ulimits:
+      nofile: {soft: 262144, hard: 262144}
+    depends_on: [kafka]
+    mem_limit: 1g
+    restart: unless-stopped
+
+  postgres:
+    # Trip ledger (ridesync.sinks.postgres writes it).
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: ridesync
+      POSTGRES_USER: ridesync
+      POSTGRES_PASSWORD: ridesync
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    mem_limit: 256m
+    restart: unless-stopped
+
+  grafana:
+    # Live dashboards on http://localhost:3000 (no login needed locally). Dashboards live in the repo:
+    # edit docker/grafana/make_dashboard.py, run it, and Grafana picks the file up.
+    image: grafana/grafana:11.4.0
+    ports:
+      - "3000:3000"
+    environment:
+      GF_INSTALL_PLUGINS: grafana-clickhouse-datasource
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/ridesync.json
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on: [clickhouse, postgres]
+    mem_limit: 300m
+    restart: unless-stopped
+
 volumes:
   kafka-data:
+  flink-checkpoints:
+  grafana-data:
+  clickhouse-data:
+  postgres-data:

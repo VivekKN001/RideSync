@@ -9,10 +9,10 @@ evaluated on a measurable cost function (wait time, cancellations, driver idle t
 |---|---|---|
 | M0 | Hungarian from scratch, greedy baselines, deterministic offline simulator, metrics | done |
 | M1 | Experiment: gain vs fleet density and batch window; cancellation-aware cost | done — `experiments/FINDINGS.md` |
-| M2 | OSRM + NYC (Manhattan) road network + TLC demand replay | real demand + calibration done; OSRM runs pending Docker |
+| M2 | OSRM + NYC (Manhattan) road network + TLC demand replay | done — `experiments/FINDINGS.md` |
 | M3 | Kafka + live simulator + matcher service | done — live mode below; results in `experiments/FINDINGS.md` |
-| M4 | PyFlink job: driver state, windowed zone features, late events, matching snapshots | |
-| M5 | Postgres sink, ClickHouse, Grafana, deck.gl live map | |
+| M4 | PyFlink job: driver state, windowed zone features, late events | done — stream features below; lateness experiment in `experiments/FINDINGS.md` |
+| M5 | Postgres sink, ClickHouse, Grafana, deck.gl live map | done — screens below |
 | M6 | ML: OSRM ETA correction feeding edge costs, demand forecast, surge policy + elasticity | |
 | M7 | (optional) Idle-driver repositioning | |
 
@@ -52,6 +52,27 @@ evaluated on a measurable cost function (wait time, cancellations, driver idle t
   Its results are bit-identical to the offline simulator (tested with 1 and 3 partitions and with reordered
   delivery), so any live-vs-offline difference is latency alone.
 
+## Stream features and screens (M4, M5)
+
+```
+ Kafka world topics ──► Flink (ridesync.stream) ──► zone-features  (per zone, per simulated minute)
+                    │                           └─► late-events    (after the watermark; never silently dropped)
+                    ├─► ClickHouse (Kafka engine, no code) ── event history + time series ──┐
+                    ├─► ridesync.sinks.postgres ── Postgres trip ledger (one row per trip) ──┴─► Grafana :3000
+                    └─► ridesync.web ── WebSocket ──► live map :8000 (deck.gl)
+```
+
+- **Flink is only the runner.** The feature logic is plain Python (`ridesync/stream/features.py`) with a reference
+  runner that the tests and the lateness experiment use; the Flink job produces the same rows. Driver state is Flink
+  keyed state, checkpointed every 10 s. Watermarks are per partition with a bounded lateness (`--lateness-ms`,
+  default 2 s).
+- **Trip ledger.** A consumer group with committed offsets; offsets are committed after the database transaction,
+  every write is an idempotent upsert, and a trip never moves back to an earlier status, so redelivered or
+  out-of-order events leave it right.
+- **Dashboards are code.** `docker/grafana/make_dashboard.py` writes `docker/grafana/dashboards/ridesync.json`,
+  which Grafana loads on start: waiting riders, matches per minute, cancel rate, pickup ETA, solve time, offer
+  round trip, a zone table and a run picker.
+
 ## Layout
 
 ```
@@ -60,13 +81,20 @@ ridesync/dispatch/   one batch: available drivers, ETA matrix, problem, solve (s
 ridesync/sim/        discrete-event simulator: config, demand, engine, metrics
 ridesync/live/       schema (topics, messages), bus (in-memory) + kafka_bus, world (live simulator),
                      matcher (service), lockstep, sim (CLI), topics
+ridesync/stream/     zones (point -> taxi zone, dependency-free), features (zone features + reference runner),
+                     job (PyFlink wiring)
+ridesync/sinks/      postgres (trip ledger)
+ridesync/web/        live map server (FastAPI + WebSocket) and page
+ridesync/viz/        replay page for offline runs
+docker/              Flink image, ClickHouse schema, Postgres schema, Grafana provisioning + dashboard generator
 ridesync/geo.py      Route + travel-time interface, straight-line model
 ridesync/routing/    OSRM client (table/route, chunking, cache, fallback), calibration, model factory
 ridesync/data/       downloads; TLC high-volume FHV trips -> demand slices with in-zone coordinates
 ridesync/experiments.py   parallel grid runner + paired comparisons
 experiments/         experiment scripts and results
 tests/               Hungarian vs brute force / scipy, strategy validity, simulator invariants,
-                     live == offline in lockstep, matcher restart, Kafka end to end (when a broker is up)
+                     live == offline in lockstep, matcher restart, Kafka end to end (when a broker is up),
+                     zone features vs simulator totals, trip ledger against real Postgres (when it is up)
 ```
 
 ## Cost model
@@ -90,7 +118,7 @@ riders (fairness). The optimal solve pads the matrix with one "stay unmatched" c
 
 ```
 python -m venv .venv && .venv\Scripts\activate
-pip install -e ".[dev,live]" pandas pyarrow geopandas requests
+pip install -e ".[dev,live,web]" pandas pyarrow geopandas requests
 pytest
 
 # M0/M1: synthetic city, no external data
@@ -106,7 +134,7 @@ python experiments/m2_real_demand.py --travel straight
 
 # M2 with the road network (Docker)
 docker compose --profile prep run --rm osrm-prep             # one-off, ~5 min
-docker compose up -d osrm
+docker compose --profile routing up -d osrm
 python -m ridesync.routing.calibrate --slice data/processed/trips_2024-03-13_1700_3h_manhattan_f0.1.parquet --osrm http://localhost:5000
 python experiments/m2_real_demand.py --travel osrm
 
@@ -115,4 +143,18 @@ docker compose up -d kafka
 python -m ridesync.live.matcher                              # terminal 1: runs until Ctrl+C
 python -m ridesync.live.sim --speed 10 --compare-offline     # terminal 2: 3 h of demand in ~18 min
 python experiments/m3_live_vs_offline.py                     # offline vs lockstep vs live at 10x/30x/60x
+
+# M4: stream features (Flink UI on http://localhost:8081)
+docker build -t ridesync-flink:1.20 docker/flink             # once
+python -m ridesync.stream.zones                              # once: data/processed/taxi_zones.json
+docker compose up -d flink-jobmanager flink-taskmanager
+docker compose run --rm flink-submit                         # add --lateness-ms 5000 etc. to change the job
+python experiments/m4_lateness.py                            # watermark allowance vs late events
+
+# M5: storage and screens
+docker compose up -d clickhouse postgres grafana             # Grafana on http://localhost:3000
+python -m ridesync.sinks.postgres                            # terminal: trip ledger
+python -m ridesync.web                                       # terminal: live map on http://localhost:8000
+python -m ridesync.live.matcher                              # terminal
+python -m ridesync.live.sim --speed 20                       # then watch the map and dashboards
 ```

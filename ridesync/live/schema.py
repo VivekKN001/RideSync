@@ -2,7 +2,9 @@
 
 Every message is a JSON object with ``v`` (schema version), ``type``, ``run``
 (the simulation run it belongs to) and ``t`` (event time in simulated seconds
-since the run started). The ``type`` is also sent as a Kafka header, so a
+since the run started). Simulator messages also carry ``ts``, the event time
+as epoch milliseconds (the wall-clock moment the event was due, so it keeps
+increasing across runs), and ``msps``, wall milliseconds per simulated second. The ``type`` is also sent as a Kafka header, so a
 consumer can skip high-volume types (location pings) without decoding them.
 
 Topic               key        types
@@ -12,6 +14,8 @@ driver-events       driver id  status, ping
 dispatch-offers     driver id  offer
 offer-responses     rider id   offer_response
 dispatch-batches    run id     batch
+zone-features       run|zone   zone_minute (Flink: per taxi zone, per simulated minute)
+late-events         run|zone   the late event, as received
 
 ``rider-events`` and ``driver-events`` also carry control messages written to
 *every* partition: ``run_start`` (with the run's dispatch config), ``tick``
@@ -36,17 +40,22 @@ DRIVER_EVENTS = "driver-events"
 DISPATCH_OFFERS = "dispatch-offers"
 OFFER_RESPONSES = "offer-responses"
 DISPATCH_BATCHES = "dispatch-batches"
-ALL_TOPICS = (RIDER_EVENTS, DRIVER_EVENTS, DISPATCH_OFFERS, OFFER_RESPONSES, DISPATCH_BATCHES)
+ZONE_FEATURES = "zone-features"   # written by the Flink job (ridesync.stream)
+LATE_EVENTS = "late-events"       # world events that arrived after their window closed
+ALL_TOPICS = (RIDER_EVENTS, DRIVER_EVENTS, DISPATCH_OFFERS, OFFER_RESPONSES, DISPATCH_BATCHES, ZONE_FEATURES,
+              LATE_EVENTS)
 WORLD_TOPICS = (RIDER_EVENTS, DRIVER_EVENTS)  # carry run_start / tick / run_end on every partition
 
 CONTROL_TYPES = frozenset({"run_start", "tick", "run_end"})
 
 
-class _Base(TypedDict):
+class _Base(TypedDict, total=False):
     v: int
     type: str
     run: str
     t: float
+    ts: int        # simulator messages: event time, epoch ms
+    msps: float    # simulator messages: wall ms per simulated second
 
 
 class RunStart(_Base):
@@ -66,6 +75,7 @@ class RiderEvent(_Base, total=False):
 
 class DriverStatus(_Base):
     driver: int
+    seq: int                  # per driver, increasing: orders statuses that share a timestamp
     state: Literal["idle", "en_route", "on_trip"]
     pos: List[float]          # where the current leg ends (an idle driver's location)
     free_at: float            # when the current leg ends
@@ -106,6 +116,7 @@ class BatchRecord(_Base):
     shadow_cost: Optional[float]
     skipped: int              # batch boundaries skipped so far because the matcher fell behind
     tick_lag_ms: Optional[float]  # wall time from the simulator sending the tick to this batch being solved
+    # (ts, from _Base: wall clock when the batch was solved)
 
 
 def encode(msg: dict) -> bytes:

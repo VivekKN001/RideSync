@@ -18,6 +18,7 @@ which reproduces the offline simulation exactly.
 from __future__ import annotations
 
 import heapq
+import random
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -28,7 +29,8 @@ from ..sim.config import SimConfig
 from ..sim.engine import DISPATCH, REQUEST, Driver, DriverState, Rider, RiderState, Simulation
 from .bus import Bus
 from .schema import (
-    DISPATCH_BATCHES, DISPATCH_OFFERS, DRIVER_EVENTS, OFFER_RESPONSES, RIDER_EVENTS, VERSION, WORLD_TOPICS, run_config,
+    CONTROL_TYPES, DISPATCH_BATCHES, DISPATCH_OFFERS, DRIVER_EVENTS, OFFER_RESPONSES, RIDER_EVENTS, VERSION,
+    WORLD_TOPICS, run_config,
 )
 
 PING = DISPATCH + 1  # after dispatch at equal timestamps
@@ -41,6 +43,10 @@ class LiveConfig:
     ping_s: float = 5.0            # driver location pings (for maps and stream features); 0 = off
     offer_timeout_s: float = 15.0  # offers applied later than this after their batch are rejected
     drain_s: float = 2.0           # wall seconds to keep reading batch stats after the run ends
+    # A bad network: this share of rider/driver events is published up to jitter_ms late (wall clock),
+    # so they reach consumers out of order. Control messages are never delayed.
+    jitter_frac: float = 0.0
+    jitter_ms: float = 0.0
 
 
 class LiveSimulation(Simulation):
@@ -65,12 +71,34 @@ class LiveSimulation(Simulation):
         self.max_lag_s = 0.0                  # worst simulated-time lag behind the wall clock
         self._seen_offers: set = set()
         self._tick_no = 0
-        self._wall0 = 0.0
+        self._wall0 = time.monotonic()
+        self._wall0_ms = float(self.started_ms)
+        # Event time: the wall-clock moment an event is due, so consumers (Flink) see times that move forward
+        # across runs. msps = wall milliseconds per simulated second.
+        self._msps = 1000.0 / live.speed if live.speed > 0 else 1000.0
+        self._delayed: list = []
+        self._jitter_rng = random.Random(cfg.seed * 7919 + 17)
+        self.delayed_events = 0
+        self._status_seq = [0] * len(self.drivers)  # orders a driver's statuses that share a timestamp
 
     # -------------------------------------------------------------- publish
     def _send(self, topic: str, key, msg: dict, partition: Optional[int] = None) -> None:
-        msg.update(v=VERSION, run=self.run_id, t=self.now)
+        msg.update(v=VERSION, run=self.run_id, t=self.now, ts=round(self._wall0_ms + self.now * self._msps),
+                   msps=self._msps)
+        if (self.live.jitter_frac > 0 and self.live.speed > 0 and topic in WORLD_TOPICS
+                and msg["type"] not in CONTROL_TYPES and self._jitter_rng.random() < self.live.jitter_frac):
+            due = time.monotonic() + self._jitter_rng.uniform(0, self.live.jitter_ms) / 1000
+            heapq.heappush(self._delayed, (due, self.delayed_events, topic, str(key), msg, partition))
+            self.delayed_events += 1
+            return
         self.producer.produce(topic, str(key), msg, partition)
+
+    def _pump(self, everything: bool = False) -> None:
+        """Publish delayed events that are due (or all of them)."""
+        now = time.monotonic()
+        while self._delayed and (everything or self._delayed[0][0] <= now):
+            _, _, topic, key, msg, partition = heapq.heappop(self._delayed)
+            self.producer.produce(topic, key, msg, partition)
 
     def _broadcast(self, typ: str, **fields) -> None:
         for topic in WORLD_TOPICS:
@@ -90,13 +118,16 @@ class LiveSimulation(Simulation):
         self._send(RIDER_EVENTS, r.spec.id, msg)
 
     def _publish_driver(self, d: Driver) -> None:
+        self._status_seq[d.id] += 1
         self._send(DRIVER_EVENTS, d.id, {
-            "type": "status", "driver": d.id, "state": d.state.value, "pos": d.pos.tolist(),
-            "free_at": d.free_at, "has_next": d.has_next, "rider": d.rider_id,
+            "type": "status", "driver": d.id, "seq": self._status_seq[d.id], "state": d.state.value,
+            "pos": d.pos.tolist(), "free_at": d.free_at, "has_next": d.has_next, "rider": d.rider_id,
         })
 
     # ------------------------------------------------------------------ run
     def run(self) -> "LiveSimulation":
+        self._wall0 = time.monotonic()
+        self._wall0_ms = time.time() * 1000
         self._broadcast("run_start", started_ms=self.started_ms,
                         config=run_config(self.cfg.dispatch, self.cfg.travel, self.live.offer_timeout_s))
         for d in self.drivers:
@@ -110,7 +141,6 @@ class LiveSimulation(Simulation):
 
         handlers = self._handlers()
         handlers[PING] = self._on_ping
-        self._wall0 = time.monotonic()
         while self._events:
             if self.live.speed > 0:
                 self._pace(self._events[0][0])
@@ -118,6 +148,7 @@ class LiveSimulation(Simulation):
             self.now = t
             handlers[kind](*args)
 
+        self._pump(everything=True)
         self._broadcast("run_end")
         self.producer.flush()
         if self.live.speed > 0:
@@ -153,6 +184,7 @@ class LiveSimulation(Simulation):
         """Wait until the wall clock reaches t_next, applying offers as they arrive."""
         self.poll(0.0)
         while self._events and self._events[0][0] >= t_next:
+            self._pump()
             ahead = t_next - self._clock()
             if ahead <= 0:
                 self.max_lag_s = max(self.max_lag_s, -ahead)

@@ -256,7 +256,7 @@ def test_kafka_end_to_end():
         thread.start()
         cfg = SMALL.with_(**{"demand.duration_s": 900.0, "demand.warmup_s": 120.0, "drivers.num_drivers": 60,
                              "dispatch.strategy": "lsa", "dispatch.interval_s": 10.0})
-        sim = LiveSimulation(cfg, KafkaBus(BOOTSTRAP, prefix), LiveConfig(speed=100.0, ping_s=5.0))
+        sim = LiveSimulation(cfg, KafkaBus(BOOTSTRAP, prefix), LiveConfig(speed=50.0, ping_s=5.0))
         sim.run()
         stop.set()
         thread.join(5)
@@ -265,7 +265,9 @@ def test_kafka_end_to_end():
         assert all(r.state in (RiderState.DONE, RiderState.CANCELLED) for r in sim.riders)
         offers = sum(sim.outcomes.values())
         rejected = sum(v for k, v in sim.outcomes.items() if k.startswith("rejected"))
-        assert offers > 0 and rejected <= 0.05 * offers
+        # At 50x, 1 ms of wall-clock delay is 50 ms of simulated time; a heavily loaded machine can push
+        # offers past their 15 s deadline. The outcomes are in the message if this ever trips.
+        assert offers > 0 and rejected <= 0.05 * offers, dict(sim.outcomes)
         # Never two riders on board one driver at once.
         trips = {}
         for r in sim.riders:

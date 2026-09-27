@@ -25,9 +25,15 @@ def run_lockstep(
     live: Optional[LiveConfig] = None,
     travel: Optional[TravelTimeModel] = None,
     bus: Optional[InMemoryBus] = None,
+    tick_s: Optional[float] = None,
 ) -> Tuple[LiveSimulation, Matcher]:
-    """``bus`` overrides the default ``InMemoryBus(partitions)`` (tests pass one that reorders delivery)."""
-    live = replace(live or LiveConfig(ping_s=0.0), speed=0.0, tick_s=cfg.dispatch.interval_s)
+    """``bus`` overrides the default ``InMemoryBus(partitions)`` (tests pass one that reorders delivery).
+
+    Ticks default to the batch interval, which is what makes the run identical to offline. Finer
+    ticks (like the live default of 1 s) still dispatch on the same boundaries, but the simulator's
+    event sequence numbers differ, so exact equality is no longer guaranteed.
+    """
+    live = replace(live or LiveConfig(ping_s=0.0), speed=0.0, tick_s=tick_s or cfg.dispatch.interval_s)
     bus = bus if bus is not None else InMemoryBus(partitions)
     sim = LiveSimulation(cfg, bus, live, travel)
     matcher = Matcher(bus, travel=sim.travel)
