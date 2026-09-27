@@ -1,0 +1,556 @@
+<title>RideSync Replay</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Public+Sans:wght@400;500;600&display=swap">
+<style>
+:root {
+  --ground: #eef1f0;
+  --surface: #fafbfa;
+  --water: #dce4e5;
+  --land: #fdfefd;
+  --park: #e3ecdf;
+  --zone-line: #d3d9d8;
+  --ink: #15191c;
+  --ink-2: #4c565e;
+  --ink-3: #6f7a82;
+  --rule: #cfd6d6;
+  --idle: #8b949c;
+  --enroute: #eda100;
+  --ontrip: #4a3aa7;
+  --waiting: #e87ba4;
+  --cancel: #e34948;
+  --mark-edge: rgba(21, 25, 28, 0.55);
+  --optimal: #2a78d6;
+  --greedy: #eb6834;
+  --focus: #2a78d6;
+  --display: "Barlow Condensed", "Arial Narrow", "Roboto Condensed", sans-serif;
+  --body: "Public Sans", "Segoe UI", system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --ground: #0f1315; --surface: #161b1e; --water: #0b0f11; --land: #1c2327; --park: #1d2a22;
+    --zone-line: #2b3439; --ink: #e7ecee; --ink-2: #b3bdc4; --ink-3: #8c979f; --rule: #2d363b;
+    --idle: #6e7881; --enroute: #c98500; --ontrip: #9085e9; --waiting: #d55181; --cancel: #e66767;
+    --mark-edge: rgba(0, 0, 0, 0.6); --optimal: #3987e5; --greedy: #d95926; --focus: #3987e5;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ground: #0f1315; --surface: #161b1e; --water: #0b0f11; --land: #1c2327; --park: #1d2a22;
+  --zone-line: #2b3439; --ink: #e7ecee; --ink-2: #b3bdc4; --ink-3: #8c979f; --rule: #2d363b;
+  --idle: #6e7881; --enroute: #c98500; --ontrip: #9085e9; --waiting: #d55181; --cancel: #e66767;
+  --mark-edge: rgba(0, 0, 0, 0.6); --optimal: #3987e5; --greedy: #d95926; --focus: #3987e5;
+}
+
+* { box-sizing: border-box; }
+body {
+  background: var(--ground);
+  color: var(--ink);
+  font: 15px/1.5 var(--body);
+  font-variant-numeric: tabular-nums;
+}
+.page { max-width: 1240px; margin: 0 auto; padding-inline: 20px; padding-block: 20px 48px; display: grid; gap: 22px; }
+h1, h2, h3 { font-family: var(--display); font-weight: 600; margin: 0; text-wrap: balance; letter-spacing: 0.01em; }
+h1 { font-size: 34px; line-height: 1; }
+h2 { font-size: 24px; line-height: 1.1; }
+p { margin: 0; max-width: 68ch; }
+.eyebrow { font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; }
+.muted { color: var(--ink-2); }
+
+/* header */
+.masthead { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 12px 32px; }
+.masthead .context { color: var(--ink-2); font-size: 14px; }
+
+/* transport */
+.transport {
+  position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px;
+  background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 10px 14px;
+}
+.clock { font-family: var(--display); font-weight: 600; font-size: 34px; line-height: 1; min-width: 5.2ch; }
+.clock small { font-size: 15px; font-weight: 500; color: var(--ink-3); margin-left: 6px; letter-spacing: 0.04em; }
+button, .seg label {
+  font: 600 14px var(--body); color: var(--ink); background: transparent; cursor: pointer;
+  border: 1px solid var(--rule); border-radius: 7px; padding: 7px 12px;
+}
+button:hover, .seg label:hover { border-color: var(--ink-3); }
+button:focus-visible, .seg input:focus-visible + label, input[type=range]:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+#play { min-width: 86px; background: var(--ink); color: var(--surface); border-color: var(--ink); }
+.seg { display: flex; gap: 0; }
+.seg input { position: absolute; opacity: 0; pointer-events: none; }
+.seg label { border-radius: 0; margin-left: -1px; font-weight: 500; }
+.seg label:first-of-type { border-radius: 7px 0 0 7px; margin-left: 0; }
+.seg label:last-of-type { border-radius: 0 7px 7px 0; }
+.seg input:checked + label { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+.scrub { flex: 1 1 260px; display: grid; gap: 2px; }
+.scrub input { width: 100%; accent-color: var(--ink); }
+.scrub .ticks { display: flex; justify-content: space-between; font-size: 11px; color: var(--ink-3); }
+
+/* map strips */
+.strip { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 12px 14px 10px; display: grid; gap: 8px; }
+.strip-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 6px 24px; }
+.strip-title { display: flex; align-items: baseline; gap: 10px; }
+.swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; flex: none; transform: translateY(1px); }
+.strip-title p { font-size: 13px; color: var(--ink-2); max-width: 60ch; }
+.counters { display: flex; gap: 20px; flex-wrap: wrap; }
+.counter { display: grid; line-height: 1.1; }
+.counter b { font-family: var(--display); font-size: 24px; font-weight: 600; }
+.counter span { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); }
+.map { width: 100%; display: block; border-radius: 6px; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 20px; font-size: 13px; color: var(--ink-2); align-items: center; }
+.legend svg { vertical-align: -2px; margin-right: 6px; }
+
+/* charts */
+.charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+.chart { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 12px 14px 8px; position: relative; }
+.chart h3 { font-size: 18px; }
+.chart .sub { font-size: 12px; color: var(--ink-3); margin-bottom: 4px; }
+.chart svg { width: 100%; height: auto; display: block; overflow: visible; }
+.series-legend { display: flex; gap: 16px; font-size: 13px; color: var(--ink-2); flex-wrap: wrap; }
+.series-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.series-legend i { width: 14px; height: 2px; display: inline-block; }
+.tip {
+  position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--rule);
+  border-radius: 6px; padding: 6px 8px; font-size: 12px; line-height: 1.4; box-shadow: 0 4px 14px rgba(0,0,0,0.12);
+  white-space: nowrap; z-index: 3;
+}
+.tip b { font-weight: 600; }
+
+/* results */
+.results { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 22px; align-items: start; }
+@media (max-width: 860px) { .results { grid-template-columns: minmax(0, 1fr); } }
+.table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { padding: 9px 14px; text-align: right; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; white-space: normal; }
+thead th { font-size: 12px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; }
+tbody tr:last-child td { border-bottom: 0; }
+td.better { font-weight: 600; }
+.notes { display: grid; gap: 12px; font-size: 14px; color: var(--ink-2); }
+.notes h3 { font-size: 20px; color: var(--ink); }
+.notes ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+@media (max-width: 520px) {
+  .clock { font-size: 28px; }
+  .counters { gap: 14px; }
+  .counter b { font-size: 20px; }
+}
+</style>
+
+<div class="page">
+  <header class="masthead">
+    <div>
+      <div class="eyebrow">RideSync · dispatch replay</div>
+      <h1>Two ways to dispatch the same evening rush</h1>
+    </div>
+    <p class="context" id="context"></p>
+  </header>
+
+  <div class="transport" role="group" aria-label="Playback">
+    <button id="play" type="button" aria-pressed="false">Play</button>
+    <div class="clock" id="clock" aria-live="off">17:00<small>WED</small></div>
+    <div class="seg" role="radiogroup" aria-label="Playback speed">
+      <input type="radio" name="speed" id="sp30" value="30"><label for="sp30">30×</label>
+      <input type="radio" name="speed" id="sp60" value="60" checked><label for="sp60">60×</label>
+      <input type="radio" name="speed" id="sp120" value="120"><label for="sp120">120×</label>
+      <input type="radio" name="speed" id="sp300" value="300"><label for="sp300">300×</label>
+    </div>
+    <div class="scrub">
+      <input type="range" id="scrub" min="0" max="100" step="1" value="0" aria-label="Time">
+      <div class="ticks" id="ticks"></div>
+    </div>
+  </div>
+
+  <section id="strips" style="display:grid; gap:14px" aria-label="Side-by-side maps"></section>
+
+  <div class="legend" aria-label="Map legend">
+    <span><svg width="12" height="12"><circle cx="6" cy="6" r="4" fill="var(--idle)" stroke="var(--mark-edge)" stroke-width="1"/></svg>Driver, free</span>
+    <span><svg width="26" height="12"><line x1="2" y1="6" x2="20" y2="6" stroke="var(--enroute)" stroke-width="1.5"/><circle cx="6" cy="6" r="4" fill="var(--enroute)" stroke="var(--mark-edge)" stroke-width="1"/></svg>Driving to a pickup</span>
+    <span><svg width="12" height="12"><circle cx="6" cy="6" r="4" fill="var(--ontrip)" stroke="var(--mark-edge)" stroke-width="1"/></svg>Carrying a passenger</span>
+    <span><svg width="12" height="12"><path d="M6 1 L11 6 L6 11 L1 6 Z" fill="var(--waiting)" stroke="var(--mark-edge)" stroke-width="1"/></svg>Rider waiting for a match</span>
+    <span><svg width="12" height="12"><path d="M2 2 L10 10 M10 2 L2 10" stroke="var(--cancel)" stroke-width="2.2" stroke-linecap="round"/></svg>Rider cancelled (shown 90 s)</span>
+    <span class="muted">Uptown is to the right; the Hudson runs along the top.</span>
+  </div>
+
+  <section style="display:grid; gap:12px" aria-labelledby="rush-h">
+    <div style="display:flex; flex-wrap:wrap; justify-content:space-between; align-items:baseline; gap:8px">
+      <h2 id="rush-h">Over the whole rush</h2>
+      <div class="series-legend" id="series-legend"></div>
+    </div>
+    <div class="charts" id="charts"></div>
+  </section>
+
+  <section class="results" aria-labelledby="res-h">
+    <div style="display:grid; gap:10px">
+      <h2 id="res-h">Results, 17:30–20:00</h2>
+      <p class="muted" style="font-size:14px">The first half hour is left out while the fleet settles in. Better value in each row in bold.</p>
+      <div class="table-wrap"><table id="results"></table></div>
+    </div>
+    <div class="notes">
+      <h3>What to watch for</h3>
+      <ul>
+        <li><b>Yellow lines are the cost.</b> Each one is a driver crossing town to a pickup. The immediate strategy grabs whichever driver is closest <i>right now</i>, even if that is 3 km away, and the rider often cancels on seeing the ETA.</li>
+        <li><b>Pink diamonds pile up on the batched side.</b> It holds requests for up to 30 s and solves them together, so riders wait a little longer for a match but get a closer driver.</li>
+        <li><b>Why it pays:</b> a far-away match is a double loss. The rider is likely to cancel, and the driver spent minutes driving toward nobody.</li>
+      </ul>
+      <h3>How this was made</h3>
+      <ul id="method"></ul>
+    </div>
+  </section>
+</div>
+
+<script>
+const DATA = /*__REPLAY_DATA__*/null;
+
+(function () {
+  const M = DATA.meta, R = DATA.riders, RUNS = DATA.runs;
+  const T_END = M.t_end, LAST_REQ = M.window[1];
+  const NR = R.req.length;
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // ---------- formatting
+  const clockOf = (t) => {
+    const s = Math.round(M.start_clock_s + t), h = Math.floor(s / 3600) % 24, m = Math.floor(s / 60) % 60;
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+  };
+  const fmt = new Intl.NumberFormat("en-US");
+  const pct = (x) => (x * 100).toFixed(1) + "%";
+  const mmss = (s) => `${Math.floor(s / 60)} min ${String(Math.round(s % 60)).padStart(2, "0")} s`;
+
+  document.getElementById("context").textContent =
+    `Manhattan, ${M.date}, 17:00–20:00 · ${fmt.format(NR)} real Uber and Lyft requests (a 10% sample) · ${M.drivers} simulated drivers · the same riders on both maps`;
+
+  // ---------- theme tokens (re-read when the theme changes)
+  let C = {};
+  function readTokens() {
+    const cs = getComputedStyle(document.documentElement);
+    for (const k of ["water", "land", "park", "zone-line", "ink", "ink-2", "ink-3", "idle", "enroute", "ontrip",
+                     "waiting", "cancel", "mark-edge", "optimal", "greedy", "rule", "surface"]) {
+      C[k] = cs.getPropertyValue("--" + k).trim();
+    }
+  }
+  readTokens();
+
+  // ---------- geometry: grid-north metres -> screen, uptown to the right, Hudson on top
+  let xmin = Infinity, xmax = -Infinity, ymin = Infinity, ymax = -Infinity;
+  for (const z of DATA.zones) for (const r of z.rings) for (let i = 0; i < r.length; i += 2) {
+    xmin = Math.min(xmin, r[i]); xmax = Math.max(xmax, r[i]); ymin = Math.min(ymin, r[i + 1]); ymax = Math.max(ymax, r[i + 1]);
+  }
+  const PAD = 350;
+  xmin -= PAD; xmax += PAD; ymin -= PAD; ymax += PAD;
+  const ASPECT = (xmax - xmin) / (ymax - ymin); // screen height / width
+
+  // ---------- strips
+  const stripsEl = document.getElementById("strips");
+  const panels = RUNS.map((run) => {
+    const el = document.createElement("article");
+    el.className = "strip";
+    el.innerHTML = `
+      <div class="strip-head">
+        <div class="strip-title">
+          <span class="swatch" style="background:var(--${run.key})"></span>
+          <div><h2>${run.label}</h2><p>${run.desc}</p></div>
+        </div>
+        <div class="counters">
+          <div class="counter"><b data-k="waiting">0</b><span>Waiting now</span></div>
+          <div class="counter"><b data-k="enroute">0</b><span>To pickup</span></div>
+          <div class="counter"><b data-k="done">0</b><span>Trips done</span></div>
+          <div class="counter"><b data-k="cancelled">0</b><span>Cancelled</span></div>
+        </div>
+      </div>
+      <canvas class="map" role="img" aria-label="Map of Manhattan for ${run.label}"></canvas>`;
+    stripsEl.appendChild(el);
+    const canvas = el.querySelector("canvas");
+    const counters = {};
+    el.querySelectorAll("[data-k]").forEach((b) => (counters[b.dataset.k] = b));
+    return { run, canvas, ctx: canvas.getContext("2d"), counters, base: null, w: 0, h: 0, cursor: new Int32Array(M.drivers) };
+  });
+
+  function layout() {
+    for (const p of panels) {
+      const w = p.canvas.clientWidth || p.canvas.parentElement.clientWidth;
+      const h = Math.max(90, Math.round(w * ASPECT));
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      p.canvas.style.height = h + "px";
+      p.canvas.width = Math.round(w * dpr);
+      p.canvas.height = Math.round(h * dpr);
+      p.w = w; p.h = h; p.dpr = dpr; p.base = null;
+    }
+  }
+  function proj(p, x, y) {
+    // screen X follows grid y (uptown right); screen Y follows grid x (west on top)
+    const s = p.w / (ymax - ymin);
+    return [(y - ymin) * s, (x - xmin) * s];
+  }
+
+  function drawBase(p) {
+    const off = document.createElement("canvas");
+    off.width = p.canvas.width; off.height = p.canvas.height;
+    const g = off.getContext("2d");
+    g.scale(p.dpr, p.dpr);
+    g.fillStyle = C.water; g.fillRect(0, 0, p.w, p.h);
+    for (const z of DATA.zones) {
+      g.beginPath();
+      for (const r of z.rings) {
+        for (let i = 0; i < r.length; i += 2) {
+          const [sx, sy] = proj(p, r[i], r[i + 1]);
+          i === 0 ? g.moveTo(sx, sy) : g.lineTo(sx, sy);
+        }
+        g.closePath();
+      }
+      g.fillStyle = z.park ? C.park : C.land;
+      g.fill();
+      g.strokeStyle = C["zone-line"]; g.lineWidth = 0.75; g.stroke();
+    }
+    g.font = `500 ${p.w < 600 ? 9 : 11}px "Public Sans", sans-serif`;
+    g.fillStyle = C["ink-3"];
+    g.textAlign = "left"; g.fillText("HUDSON RIVER", 10, 16);
+    g.textAlign = "right"; g.fillText("EAST RIVER", p.w - 10, p.h - 8);
+    p.base = off;
+  }
+
+  // ---------- simulation state at time t
+  function driverAt(run, cursor, d, t) {
+    const L = run.legs, lo = L.offsets[d], hi = L.offsets[d + 1];
+    let i = cursor[d];
+    if (i < lo || i >= hi || L.t0[i] > t) i = lo; // jumped backwards: rescan from the start
+    while (i + 1 < hi && L.t0[i + 1] <= t) i++;
+    cursor[d] = i;
+    const s = L.s[i];
+    let x = L.x1[i], y = L.y1[i];
+    if (s !== 0) {
+      const span = L.t1[i] - L.t0[i];
+      const f = span > 0 ? Math.min(1, Math.max(0, (t - L.t0[i]) / span)) : 1;
+      x = L.x0[i] + (L.x1[i] - L.x0[i]) * f;
+      y = L.y0[i] + (L.y1[i] - L.y0[i]) * f;
+    }
+    return [s, x, y, L.x1[i], L.y1[i]];
+  }
+
+  function drawPanel(p, t) {
+    if (!p.base) drawBase(p);
+    const g = p.ctx, run = p.run, rr = run.riders;
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.drawImage(p.base, 0, 0);
+    g.setTransform(p.dpr, 0, 0, p.dpr, 0, 0);
+    const r = p.w < 600 ? 2.4 : 3.2;
+
+    // riders waiting, and recent cancellations
+    let waiting = 0, cancelled = 0, done = 0;
+    for (let i = 0; i < NR; i++) {
+      const req = R.req[i];
+      if (req > t) continue;
+      const m = rr.matched[i], c = rr.cancel[i], dr = rr.dropoff[i];
+      if (dr >= 0 && dr <= t) done++;
+      if (c >= 0 && c <= t) {
+        cancelled++;
+        if (t - c < 90) {
+          const [sx, sy] = proj(p, R.ox[i], R.oy[i]);
+          const k = r + 0.6;
+          g.globalAlpha = 1 - (t - c) / 90;
+          g.strokeStyle = C.cancel; g.lineWidth = 2; g.lineCap = "round";
+          g.beginPath(); g.moveTo(sx - k, sy - k); g.lineTo(sx + k, sy + k); g.moveTo(sx + k, sy - k); g.lineTo(sx - k, sy + k); g.stroke();
+          g.globalAlpha = 1;
+        }
+        continue;
+      }
+      if (m < 0 || m > t) {
+        waiting++;
+        const [sx, sy] = proj(p, R.ox[i], R.oy[i]);
+        const k = r + 0.8;
+        g.beginPath(); g.moveTo(sx, sy - k); g.lineTo(sx + k, sy); g.lineTo(sx, sy + k); g.lineTo(sx - k, sy); g.closePath();
+        g.fillStyle = C.waiting; g.fill(); g.strokeStyle = C["mark-edge"]; g.lineWidth = 0.8; g.stroke();
+      }
+    }
+
+    // drivers: lines to pickups first, then dots on top
+    const pos = [];
+    let enroute = 0;
+    for (let d = 0; d < M.drivers; d++) {
+      const [s, x, y, tx, ty] = driverAt(run, p.cursor, d, t);
+      pos.push([s, ...proj(p, x, y)]);
+      if (s === 1) {
+        enroute++;
+        const [ex, ey] = proj(p, tx, ty);
+        const [sx, sy] = pos[d].slice(1);
+        g.strokeStyle = C.enroute; g.lineWidth = 1.3; g.globalAlpha = 0.85;
+        g.beginPath(); g.moveTo(sx, sy); g.lineTo(ex, ey); g.stroke();
+        g.globalAlpha = 1;
+        g.beginPath(); g.arc(ex, ey, 1.6, 0, Math.PI * 2); g.fillStyle = C.enroute; g.fill();
+      }
+    }
+    const fillOf = [C.idle, C.enroute, C.ontrip];
+    for (const [s, sx, sy] of pos) {
+      g.beginPath(); g.arc(sx, sy, s === 0 ? r * 0.8 : r, 0, Math.PI * 2);
+      g.fillStyle = fillOf[s]; g.fill();
+      g.strokeStyle = C["mark-edge"]; g.lineWidth = 0.7; g.stroke();
+    }
+    if (p.w >= 480) {
+      g.font = `600 11px "Public Sans", sans-serif`;
+      g.textAlign = "center"; g.lineJoin = "round";
+      for (const l of DATA.landmarks) {
+        const [sx, sy] = proj(p, l.x, l.y);
+        g.strokeStyle = C.land; g.lineWidth = 3.5; g.globalAlpha = 0.9;
+        g.strokeText(l.label.toUpperCase(), sx, sy + 4);
+        g.globalAlpha = 1; g.fillStyle = C["ink-2"];
+        g.fillText(l.label.toUpperCase(), sx, sy + 4);
+      }
+    }
+    p.counters.waiting.textContent = fmt.format(waiting);
+    p.counters.enroute.textContent = fmt.format(enroute);
+    p.counters.done.textContent = fmt.format(done);
+    p.counters.cancelled.textContent = fmt.format(cancelled);
+  }
+
+  // ---------- charts (SVG, shared time axis)
+  const chartsEl = document.getElementById("charts");
+  const CH = [
+    { key: "waiting", title: "Riders waiting for a match", sub: "at each moment" },
+    { key: "cancelled", title: "Riders who cancelled", sub: "running total" },
+    { key: "completed", title: "Trips completed", sub: "running total" },
+  ];
+  document.getElementById("series-legend").innerHTML = RUNS.map(
+    (r) => `<span><i style="background:var(--${r.key})"></i>${r.label}</span>`).join("");
+
+  const VW = 360, VH = 190, ML = 40, MR = 12, MT = 10, MB = 26;
+  const xs = (t) => ML + (t / T_END) * (VW - ML - MR);
+  const niceMax = (v) => {
+    const e = Math.pow(10, Math.floor(Math.log10(v))), n = v / e;
+    return [1, 1.2, 1.6, 2, 2.5, 3, 4, 5, 6, 8, 10].find((s) => s >= n) * e;
+  };
+  const hourTicks = [];
+  for (let h = 0; h * 3600 <= T_END; h++) hourTicks.push(h * 3600);
+
+  const charts = CH.map((c) => {
+    const vmax = niceMax(Math.max(...RUNS.map((r) => Math.max(...r.series[c.key]))) * 1.05);
+    const ys = (v) => MT + (1 - v / vmax) * (VH - MT - MB);
+    const yt = [0, vmax / 2, vmax];
+    const series = RUNS[0].series.t;
+    let svg = `<svg viewBox="0 0 ${VW} ${VH}" role="img" aria-label="${c.title}">`;
+    for (const v of yt) svg += `<line x1="${ML}" x2="${VW - MR}" y1="${ys(v)}" y2="${ys(v)}" stroke="var(--rule)" stroke-width="1"/>` +
+      `<text x="${ML - 6}" y="${ys(v) + 4}" text-anchor="end" font-size="11" fill="var(--ink-3)">${fmt.format(v)}</text>`;
+    for (const t of hourTicks) svg += `<text x="${xs(t)}" y="${VH - 8}" text-anchor="middle" font-size="11" fill="var(--ink-3)">${clockOf(t)}</text>`;
+    svg += `<line x1="${xs(LAST_REQ)}" x2="${xs(LAST_REQ)}" y1="${MT}" y2="${VH - MB}" stroke="var(--ink-3)" stroke-dasharray="3 3" stroke-width="1"/>`;
+    svg += `<text x="${xs(LAST_REQ) + 4}" y="${MT + 9}" font-size="10" fill="var(--ink-3)">last request</text>`;
+    for (const r of RUNS) {
+      const d = r.series[c.key].map((v, i) => `${i ? "L" : "M"}${xs(series[i]).toFixed(1)},${ys(v).toFixed(1)}`).join("");
+      svg += `<path d="${d}" fill="none" stroke="var(--${r.key})" stroke-width="2" stroke-linejoin="round"/>`;
+    }
+    svg += `<line class="cursor" x1="0" x2="0" y1="${MT}" y2="${VH - MB}" stroke="var(--ink)" stroke-width="1"/>`;
+    svg += RUNS.map((r) => `<circle class="dot-${r.key}" r="4" fill="var(--${r.key})" stroke="var(--surface)" stroke-width="2"/>`).join("");
+    svg += `<rect class="hit" x="${ML}" y="${MT}" width="${VW - ML - MR}" height="${VH - MT - MB}" fill="transparent" style="cursor:crosshair"/></svg>`;
+    const el = document.createElement("div");
+    el.className = "chart";
+    el.innerHTML = `<h3>${c.title}</h3><div class="sub">${c.sub}</div>${svg}<div class="tip" hidden></div>`;
+    chartsEl.appendChild(el);
+    const svgEl = el.querySelector("svg"), tip = el.querySelector(".tip");
+    const hit = el.querySelector(".hit");
+    const idxAt = (evt) => {
+      const pt = svgEl.createSVGPoint(); pt.x = evt.clientX; pt.y = evt.clientY;
+      const loc = pt.matrixTransform(svgEl.getScreenCTM().inverse());
+      const t = Math.min(T_END, Math.max(0, ((loc.x - ML) / (VW - ML - MR)) * T_END));
+      return Math.round(t / (series[1] - series[0]));
+    };
+    hit.addEventListener("pointermove", (e) => {
+      const i = Math.min(series.length - 1, idxAt(e));
+      tip.hidden = false;
+      tip.innerHTML = `<b>${clockOf(series[i])}</b><br>` + RUNS.map((r) =>
+        `<span class="swatch" style="background:var(--${r.key});width:8px;height:8px"></span> ${r.label}: <b>${fmt.format(r.series[c.key][i])}</b>`).join("<br>");
+      const box = el.getBoundingClientRect();
+      const left = e.clientX - box.left + 12;
+      tip.style.left = Math.min(left, box.width - tip.offsetWidth - 6) + "px";
+      tip.style.top = (e.clientY - box.top - 10) + "px";
+    });
+    hit.addEventListener("pointerleave", () => (tip.hidden = true));
+    hit.addEventListener("click", (e) => seek(series[Math.min(series.length - 1, idxAt(e))]));
+    return { c, svgEl, ys, cursor: el.querySelector(".cursor"), dots: RUNS.map((r) => el.querySelector(".dot-" + r.key)) };
+  });
+
+  function drawCursors(t) {
+    const series = RUNS[0].series.t;
+    const i = Math.min(series.length - 1, Math.round(t / (series[1] - series[0])));
+    for (const ch of charts) {
+      const x = xs(t);
+      ch.cursor.setAttribute("x1", x); ch.cursor.setAttribute("x2", x);
+      RUNS.forEach((r, k) => { ch.dots[k].setAttribute("cx", x); ch.dots[k].setAttribute("cy", ch.ys(r.series[ch.c.key][i])); });
+    }
+  }
+
+  // ---------- results table
+  const rows = [
+    ["Ride requests", "requests", (v) => fmt.format(v), 0],
+    ["Trips completed", "completed", (v) => fmt.format(v), 1],
+    ["Riders who cancelled", "cancel_rate", pct, -1],
+    ["… because no driver was found in time", "cancel_no_match_rate", pct, -1],
+    ["… because the quoted pickup time was too long", "cancel_eta_rate", pct, -1],
+    ["Average wait, counting cancelled riders", "wait_all_mean_s", mmss, -1],
+    ["Average driver drive to the pickup", "pickup_mean_s", mmss, -1],
+    ["Trips per hour", "completed_per_hour", (v) => fmt.format(Math.round(v)), 1],
+    ["Driver time spent idle", "driver_idle_frac", pct, 0],
+  ];
+  let html = `<thead><tr><th scope="col">Measure</th>${RUNS.map((r) =>
+    `<th scope="col"><span class="swatch" style="background:var(--${r.key});width:9px;height:9px"></span> ${r.label}</th>`).join("")}</tr></thead><tbody>`;
+  for (const [label, k, f, better] of rows) {
+    const vals = RUNS.map((r) => r.metrics[k]);
+    const best = better === 0 ? -1 : vals.indexOf(better > 0 ? Math.max(...vals) : Math.min(...vals));
+    html += `<tr><td>${label}</td>${vals.map((v, i) => `<td class="${i === best ? "better" : ""}">${f(v)}</td>`).join("")}</tr>`;
+  }
+  document.getElementById("results").innerHTML = html + "</tbody>";
+
+  document.getElementById("method").innerHTML = [
+    `Real demand: every Uber and Lyft request in Manhattan between 17:00 and 20:00 on ${M.date}, from the NYC Taxi and Limousine Commission's public trip records, sampled to 10%. The data gives pickup zones, so each point is placed at random inside its zone.`,
+    `The drivers, the riders' patience and their tolerance for long pickup times are simulated. Both maps use the same riders, driver start positions and accept or decline decisions, so every difference comes from the dispatch rule.`,
+    `Cars move in straight lines at ${M.speed_kmh} km/h × ${M.detour} detour, the speed fitted to real Manhattan trip times. The road-network version (OSRM) runs in the experiments, not in this replay.`,
+    `The map is turned to Manhattan's street grid, ${M.grid_deg}° off true north, then laid on its side.`,
+  ].map((s) => `<li>${s}</li>`).join("");
+
+  // ---------- playback
+  const scrub = document.getElementById("scrub");
+  scrub.max = Math.ceil(T_END);
+  const ticksEl = document.getElementById("ticks");
+  ticksEl.innerHTML = hourTicks.map((t) => `<span>${clockOf(t)}</span>`).join("");
+  const clockEl = document.getElementById("clock"), playBtn = document.getElementById("play");
+  let t = 3600, playing = false, speed = 60, last = 0, raf = 0;
+
+  function render() {
+    for (const p of panels) drawPanel(p, t);
+    drawCursors(t);
+    clockEl.innerHTML = `${clockOf(t)}<small>WED</small>`;
+    scrub.value = Math.round(t);
+  }
+  function seek(nt) { t = Math.max(0, Math.min(T_END, nt)); for (const p of panels) p.cursor.fill(0); render(); }
+  function tick(now) {
+    if (!playing) return;
+    const dt = last ? (now - last) / 1000 : 0;
+    last = now;
+    t += dt * speed;
+    if (t >= T_END) { t = T_END; setPlaying(false); }
+    render();
+    raf = requestAnimationFrame(tick);
+  }
+  function setPlaying(on) {
+    playing = on; last = 0;
+    playBtn.textContent = on ? "Pause" : "Play";
+    playBtn.setAttribute("aria-pressed", String(on));
+    cancelAnimationFrame(raf);
+    if (on) { if (t >= T_END) seek(0); raf = requestAnimationFrame(tick); }
+  }
+  playBtn.addEventListener("click", () => setPlaying(!playing));
+  scrub.addEventListener("input", () => seek(+scrub.value));
+  document.querySelectorAll('input[name="speed"]').forEach((el) => el.addEventListener("change", () => (speed = +el.value)));
+  document.addEventListener("keydown", (e) => {
+    if (e.code === "Space" && !/INPUT|BUTTON/.test(document.activeElement.tagName)) { e.preventDefault(); setPlaying(!playing); }
+  });
+
+  const retheme = () => { readTokens(); for (const p of panels) p.base = null; render(); };
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", retheme);
+  new MutationObserver(retheme).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+  let rt = 0;
+  window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => { layout(); render(); }, 100); });
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { for (const p of panels) p.base = null; render(); });
+
+  layout();
+  render();
+  if (!reduce) setPlaying(true);
+})();
+</script>

@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ridesync"
+version = "0.1.0"
+description = "Real-time ride-hailing dispatch: batched optimal bipartite matching vs greedy"
+# PyFlink runs this package on Python 3.10/3.11, so no 3.12+ syntax.
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24", "scipy>=1.10"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+live = ["confluent-kafka>=2.5"]
+
+[tool.setuptools.packages.find]
+include = ["ridesync*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
