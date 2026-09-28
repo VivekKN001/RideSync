@@ -20,7 +20,7 @@ from ridesync.live.schema import RIDER_EVENTS, DRIVER_EVENTS, ZONE_PRICES, decod
 from ridesync.ml.demand import (
     PER_DAY, DemandForecaster, count_matrix, features, fit_and_evaluate, hist_mean, FEATURES,
 )
-from ridesync.ml.eta import CorrectedModel, NoisyModel, check_base
+from ridesync.ml.eta import CorrectedModel, NoisyModel, TrafficFeed, check_base
 from ridesync.ml.fare import fares
 from ridesync.pricing import DemandEstimator, conversion, multiplier, pressure, zone_prices
 from ridesync.sim import SimConfig, simulate, summarize
@@ -299,6 +299,22 @@ def test_noise_depends_on_the_drive_not_the_call_order():
     assert n2.route(p, q).duration_s == first != base.route(p, q).duration_s
     assert NoisyModel(base, 0.3, seed=2).route(p, q).duration_s != first
     assert np.array_equal(n1.matrix(p[None], q[None]), base.matrix(p[None], q[None]))
+
+
+def test_traffic_feed_sees_only_finished_trips():
+    import pandas as pd
+
+    t0 = datetime(2024, 3, 1)
+    # Zone 1 -> 2: ten trips finish in the first 5 minutes at 12 mph, ten in the next 5 at 6 mph.
+    rows = [(t0 + pd.Timedelta(seconds=60 + i), 1, 2, 1.0, 300.0) for i in range(10)] +            [(t0 + pd.Timedelta(seconds=360 + i), 1, 2, 1.0, 600.0) for i in range(10)]
+    df = pd.DataFrame(rows, columns=["dropoff_datetime", "PULocationID", "DOLocationID", "trip_miles", "trip_time"])
+    f = TrafficFeed.from_trips(df, [1, 2], t0)
+    out = f.lookup(np.array([100.0, 400.0, 700.0, -5.0]), np.array([0.0, 0, 0, 0]), np.array([1.0, 1, np.nan, 1]))
+    assert np.isnan(out[0, 0]) and out[0, 1] == 0          # nothing has finished yet
+    assert out[1].tolist() == [12.0, 10.0, 12.0, 12.0]      # only the first bucket, not the one in progress
+    assert out[2, 0] == 8.0 and out[2, 1] == 20 and np.isnan(out[2, 3])  # 20 mi / 2.5 h; unknown dropoff zone
+    assert np.isnan(out[3]).all()                           # before the table
+    assert TrafficFeed.from_dict(f.to_dict()).lookup(np.array([400.0]), np.array([0.0]), np.array([1.0]))[0, 0] == 12.0
 
 
 def test_eta_bundle_must_match_its_base():

@@ -52,11 +52,27 @@ def train_fare(month: str) -> None:
     from .fare import FARE_PATH, train
 
     fit = train(month)
-    lines = [f"# M6: fare fit (TLC {month}, Manhattan, weekday 10:00-15:59)", "",
-             "Median regression of `base_passenger_fare` on trip miles and minutes.", "", "```",
-             json.dumps(fit, indent=2), "```"]
+    f = fit["fees"]
+    lines = [f"# M6: fare fit (TLC {month}, Manhattan)", "",
+             "Median regression of `base_passenger_fare` on trip miles and minutes, fitted on weekday 10:00-15:59 "
+             "(when Uber's and Lyft's own surge is rarest) of days 1-21 and tested on days 22-31. "
+             "APE = |error| / fare.", "",
+             f"Simulator fare: **${fit['base']:.2f} + ${fit['per_mile']:.2f}/mile + ${fit['per_min']:.2f}/minute**, "
+             f"minimum ${fit['min_fare']:.2f}; straight-line to road miles x{fit['road_factor']:.2f}.", ""]
+    for name, c in fit["companies"].items():
+        lines.append(f"- {name}: ${c['base']:.2f} + ${c['per_mile']:.2f}/mile + ${c['per_min']:.2f}/minute, "
+                     f"minimum ${c['min_fare']:.2f}")
+    lines += ["", "## Test days", ""]
+    lines += _table(fit["evaluation"], ["model", "test", "mae", "median_ape", "p90_ape", "bias", "n"],
+                    {"mae": "${:.2f}", "median_ape": "{:.1%}", "p90_ape": "{:.1%}", "bias": "{:+.2f}", "n": "{:,}"})
+    lines += ["", "## On top of the fare (all hours, mean per trip)", "",
+              f"Tolls ${f['tolls']:.2f}, Black Car Fund ${f['bcf']:.2f}, sales tax ${f['sales_tax']:.2f}, "
+              f"congestion surcharge ${f['congestion_surcharge']:.2f}: {f['fees_share_of_fare']:.1%} on top of the fare. "
+              f"Median rider total ${f['rider_total_median']:.2f}. Taxes and fees are not platform revenue, so the "
+              "simulator's revenue is fare x multiplier."]
     _write("m6_fare_report.md", lines)
-    print(f"fare: {fit} -> {FARE_PATH}")
+    print("\n".join(lines))
+    print(f"fare -> {FARE_PATH}")
 
 
 def train_eta(base: str, month: str, per_day: int, osrm_url: str, max_iter: int) -> None:

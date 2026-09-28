@@ -175,8 +175,26 @@ while the GBT loses only 1.9 pp from 15 to 60 minutes.
 
 ## Fares
 
-Median regression of the TLC base fare on weekday 10:00–15:59 trips: **$4.10 + $1.98/mile + $0.68/minute**,
-minimum $8.21 (median absolute error $4.87). These fares drive the revenue columns below.
+The fare is a median regression of the TLC base fare on miles and minutes, fitted on weekday 10:00–15:59
+(when Uber's and Lyft's own surge is rarest) on days 1–21 and tested on days 22–31: **$4.09 + $1.96/mile +
+$0.69/minute**, minimum $8.23. These fares drive the revenue columns below. `results/m6_fare_report.md`:
+
+| fare model (test days) | MAE | median APE | p90 APE |
+|---|---|---|---|
+| one median fare for every trip | $9.12 | 35.1% | 96.1% |
+| **fitted formula, Uber + Lyft (simulator)** | **$4.97** | **15.5%** | 47.5% |
+| formula fitted per company: Uber / Lyft | $5.63 / $3.40 | 17.6% / 11.9% | 52.0% / 31.0% |
+| GBT with zones and company, calm hours (scratch check) | $4.60 | 13.4% | 44.7% |
+| GBT with time of day as well, all hours (learns their surge) | $4.23 | 14.1% | 47.4% |
+
+**The formula is close to what TLC data can predict.** On unseen days it errs by $4.97 (the $4.87 measured on
+its own training trips was not overfit). A flexible model that also knows both zones and the company gains only
+$0.37. Adding time of day gets to $4.23, but only by learning Uber's and Lyft's own surge, which the simulator
+must not copy because it prices surge itself. Per-company fits don't help. Lyft tracks a rate card closely (12%
+median error); Uber doesn't (17–18%, even fitted on its own), consistent with Uber's upfront, route-based
+pricing. The remaining ~$4.50 comes from things TLC doesn't record: the quoted route, promotions and
+per-rider pricing. Riders also pay 23.8% on top of the fare (sales tax, congestion surcharge, Black Car Fund,
+tolls; median total $22.98). That isn't platform revenue, so simulated revenue stays fare × multiplier.
 
 ## Surge pricing (6b): with a fixed fleet, surge rations demand
 
@@ -215,50 +233,56 @@ matter for a slower lever, such as moving drivers ahead of demand (M7).
 
 ## ETA correction (6c)
 
-Offline accuracy on 200 k test trips (pickup-to-dropoff time):
+Offline accuracy on 200 k test trips (pickup-to-dropoff time), `results/m6_eta_{straight,osrm}_report.md`:
 
-| method | MAE s | MAPE | p90 APE | bias s |
+| method | straight-line base MAPE | OSRM base MAPE | OSRM median APE | OSRM p90 APE |
 |---|---|---|---|---|
-| straight-line base (global calibration) | 462 | 51.5% | 114.7% | +206 |
-| base × global median factor | 411 | 45.3% | 93.4% | +92 |
-| base × pickup zone × hour table | 355 | 39.6% | 80.0% | +69 |
-| **base × learned correction (GBT)** | **205** | **24.7%** | **51.1%** | −29 |
+| base alone (global calibration) | 51.8% | 40.8% | 30.6% | 84.3% |
+| base × pickup zone × hour table | 39.9% | 34.2% | 26.0% | 68.8% |
+| base × learned correction (GBT), no live traffic | 24.8% | 24.6% | 18.1% | 50.5% |
+| **base × learned correction + live traffic** | **24.2%** | **24.0%** | **17.7%** | **49.3%** |
 
-The learned correction halves the error of the calibrated base, and it clearly beats a lookup table. Part of
-the remaining error is noise the model can't remove: placing the same trip at random points in its zones
-already moves the base time by a median 13.9%.
+**The learned correction halves the error**, and it clearly beats a lookup table.
 
-**Road times help the raw base, but not the corrected model.** On OSRM road times instead of straight lines
-(`results/m6_eta_osrm_report.md`):
+**Road times help the raw base, but not the corrected model.** OSRM is 11 pp better before correction. After
+the correction the two bases end up within 0.2 pp of each other: from a zone and an hour, the model already
+learns what the road network adds at this level.
 
-| base | base alone MAPE | zone × hour table | learned correction MAPE | median APE | p90 APE |
-|---|---|---|---|---|---|
-| straight line | 51.5% | 39.6% | 24.7% | 18.3% | 51.1% |
-| OSRM roads | 40.7% | 33.9% | **24.5%** | 18.1% | 50.4% |
+**Live traffic helps a little.** `TrafficFeed` gives the model recent speeds, measured from trips that have
+already finished (strictly before the request's 5-minute bucket, so no future trips leak in):
+- city-wide speed and trip count over the last 30 minutes;
+- speed over the last 60 minutes of trips that started in the pickup zone;
+- speed over the last 60 minutes of trips that ended in the dropoff zone.
 
-OSRM is 11 pp better before correction, and it wins on every simple method. After the learned correction the
-two bases end up the same (0.2 pp apart). With only a zone and an hour as input, the model already learns what
-the road network adds at this level. What remains comes from inputs we don't have: exact addresses (placement
-alone moves the base time 14%), live traffic, and trip-to-trip variation. Better roads won't close that gap.
-Better inputs would.
+These features cut the error by 0.6 pp and the p90 error by 1.2 pp. In the simulator the same table acts as
+the live feed. A deployment would compute it in Flink from `driver-events`.
 
-**In the simulator** (`m6_eta_sim.py`, 400 drivers, 6 seeds, paired): the world drives on the corrected model
-plus noise, and the matcher believes either the global base or the learned model.
+**The model is at the limit of zone-level data.** As a ceiling, we measured an oracle that predicts each test
+trip's time from other *actual* trips between the same two zones, in the same half hour of the same day. It
+knows the future, and it only covers the busiest 35% of zone pairs, which are the easiest. It reaches 22.4%
+MAPE when its median includes the trip's own time, and 28.6% with a leave-one-out mean. The model's 24.0% on
+*all* trips sits between the two. Trips between the same zones in the same half hour really do vary this much,
+and placing a trip at random points in its zones already moves the base time by ~14%. Doing better needs
+exact coordinates, which public TLC data doesn't have. More features or tuning won't get there.
+
+**In the simulator** (`m6_eta_sim.py`, straight base, 400 drivers, 6 seeds, paired): the world drives on the
+corrected model plus noise, and the matcher believes either the global base or the learned model.
 
 | matcher belief | \|ETA error\| s | mean error s | late > 2 min | cancel % | wait_all s | trips/h |
 |---|---|---|---|---|---|---|
-| global multiplier | 271 | +266 | 79.1% | 13.3 | 525 | 974 |
-| learned ETA | 76 (−195 ± 3) | +12 | 13.0% | 21.2 (+7.9 ± 0.6) | 334 (−191 ± 6) | 885 (−89 ± 7) |
+| global multiplier | 266 | +260 | 78.9% | 12.8 | 512 | 979 |
+| learned ETA | 74 (−191 ± 2) | +12 | 12.7% | 19.9 (+7.0 ± 0.4) | 332 (−179 ± 4) | 900 (−79 ± 5) |
 
-Honest quotes cut the ETA error by 72%: the share of pickups more than 2 minutes late drops from 79% to 13%,
-and the average rider waits 191 s less. The cancellation and trips/h columns look worse, but they show the
-known simulator artifact: riders cancel on a long *quote* and never while the driver is on the way. The global
-matcher quotes 4.4 minutes too optimistically, so riders accept and then wait 525 s on average. The learned
-matcher quotes truthfully, and some riders decline up front. In reality many of the misled riders would cancel
-mid-pickup. The fair reading is quote accuracy and wait, and there the learned ETA clearly wins. Getting
+Honest quotes cut the ETA error by 72%. The share of pickups more than 2 minutes late drops from 79% to 13%,
+and the average rider waits 179 s less. The cancellation and trips/h columns look worse, but that's a known
+simulator artifact: riders cancel on a long *quote* but never while the driver is on the way. The global
+matcher quotes 4.3 minutes too optimistically, so riders accept and then wait 512 s on average. The learned
+matcher quotes truthfully, and some riders decline up front. In reality, many of the misled riders would cancel
+mid-pickup. The fair comparison is quote accuracy and wait, and there the learned ETA clearly wins. Getting
 throughput right would need riders who can cancel while the driver is en route (possible later work).
 
-**Framing:** "A GBT demand forecast beats the best baseline by ~5 pp WAPE. A learned ETA correction halves
-travel-time error, and in simulation it cuts late pickups from 79% to 13%. Surge with a fixed fleet trades
+**Framing:** "A GBT demand forecast beats the best baseline by ~5 pp WAPE. A learned ETA correction with
+live traffic halves travel-time error (24% MAPE, at the limit of zone-level data), and in simulation it cuts
+late pickups from 79% to 13%. Surge with a fixed fleet trades
 throughput for shorter queues and fewer cancellations, mostly where drivers are scarce. Its real benefit
 depends on a driver-supply response, which is out of scope."
