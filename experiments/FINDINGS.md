@@ -290,6 +290,26 @@ matcher quotes 4.3 minutes too optimistically, so riders accept and then wait 51
 matcher quotes truthfully, and some riders decline up front. In reality, many of the misled riders would cancel
 mid-pickup. The fair comparison is quote accuracy and wait, and there the learned ETA clearly wins.
 
+**Against a fair baseline the gain is real but smaller.** One city-wide speed is a weak opponent. So the
+experiment also runs the lookup tables a platform would build first, as matcher beliefs. Each is a median
+correction by hour, by pickup zone × hour, or by straight-line distance band × hour. Same seeds, paired:
+
+| matcher belief | \|ETA error\| s | mean error s | late > 2 min | wait_all s | trips/h |
+|---|---|---|---|---|---|
+| global multiplier | 266 | +260 | 78.9% | 512 | 979 |
+| hour table | 270 | +265 | 79.9% | 515 | 982 |
+| zone × hour table | 268 | +264 | 80.3% | 509 | 987 |
+| distance band × hour table | 118 | +78 | 29.5% | 390 | 890 |
+| learned ETA | **74** | **+12** | **12.7%** | **332** | 900 |
+
+Tables keyed on time and place alone are no better than one speed for pickups. Most of the global
+multiplier's error comes from one fact: short drives are much slower per km than a straight line suggests
+(lights, turns, getting going). Pickups are short drives. A distance table captures most of that. Against it,
+the learned ETA still cuts quote error by 44 ± 2 s and wait by 58 ± 3 s, with −0.9 ± 0.5 pp cancellations and
++11 ± 6 trips/h. That is the honest size of what the model adds over a sensible table. Offline, the distance table
+is 33.0% MAPE against 24.2% for the learned model (straight-line base). On OSRM road times it doesn't help
+(34.3%), because road routing already knows short drives are slow.
+
 **With riders who give up on late drivers, the learned ETA wins on every measure** (`riders.enroute_cancel`,
 `results/m6_eta_sim_straight_late_report.md`). A matched rider whose driver hasn't arrived by the quote plus a
 lateness tolerance cancels, and the driver stops where it is. No public data exists for that tolerance, so it

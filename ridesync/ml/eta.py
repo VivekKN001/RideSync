@@ -365,6 +365,43 @@ def _fit(X: np.ndarray, y: np.ndarray, max_iter: int, quantile: Optional[float] 
 INTERVAL = (0.1, 0.9)  # the quoted range "8-11 min": 80% of drives should land inside it
 
 
+class LookupCorrection:
+    """A lookup-table correction with the learned model's interface (``predict`` on ``eta_features`` rows):
+    the median log factor per cell of hour of day, crossed with the pickup zone (``by="zone_hour"``) or
+    with a straight-line distance band (``by="dist_hour"``: short drives are slower per km). The simple
+    baselines a platform would build first, used as matcher beliefs in the M6 ETA experiment. Unknown
+    cells fall back to ``default``."""
+
+    DIST_EDGES_M = (500.0, 1000.0, 1500.0, 2000.0, 3000.0, 4000.0, 6000.0, 9000.0)
+
+    def __init__(self, table: Dict[int, float], by: str, default: float):
+        self.table, self.by, self.default = table, by, default
+
+    def key(self, X: np.ndarray) -> np.ndarray:
+        h = np.floor(np.nan_to_num(X[:, FEATURES.index("hour")], nan=-1.0))
+        if self.by == "hour":
+            return h
+        if self.by == "zone_hour":
+            pu = X[:, FEATURES.index("pu_zone")]
+            return np.where(np.isnan(pu), -1, pu) * 24 + h
+        band = np.searchsorted(self.DIST_EDGES_M, np.exp(X[:, FEATURES.index("log_dist_m")]))
+        return band * 24 + h
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        return np.array([self.table.get(int(k), self.default) for k in self.key(X)])
+
+    @classmethod
+    def fit(cls, X: np.ndarray, y: np.ndarray, by: str, min_n: int = 30) -> "LookupCorrection":
+        """Median log(observed / base) per cell with at least ``min_n`` trips."""
+        tmp = cls({}, by, float(np.median(y)))
+        keys = tmp.key(X)
+        for k in np.unique(keys):
+            sel = keys == k
+            if sel.sum() >= min_n:
+                tmp.table[int(k)] = float(np.median(y[sel]))
+        return tmp
+
+
 def fit_and_evaluate(s: TripSample, max_iter: int = 300) -> Tuple[object, List[dict], dict]:
     """Fit on training days; compare with the base alone and a pickup-zone x hour table on test days.
     With traffic features, a model without them is fitted too, to show what live traffic adds."""
@@ -375,20 +412,17 @@ def fit_and_evaluate(s: TripSample, max_iter: int = 300) -> Tuple[object, List[d
 
     obs, base = s.observed_s[te], s.base_s[te]
     pred_model = base * np.clip(np.exp(model.predict(s.X(te))), *FACTOR_CLIP)
-    # Baselines: one global factor (the base is already calibrated, so this is ~1), and a lookup table.
+    # Baselines: one global factor (the base is already calibrated, so this is ~1), and lookup tables.
     g = float(np.exp(np.median(y[tr])))
-    key_tr = s.pu_idx[tr] * 24 + np.floor(s.hour[tr])
-    key_te = s.pu_idx[te] * 24 + np.floor(s.hour[te])
-    table: Dict[float, float] = {}
-    for k in np.unique(key_tr):
-        sel = key_tr == k
-        if sel.sum() >= 30:
-            table[float(k)] = float(np.exp(np.median(y[tr][sel])))
-    pred_table = base * np.array([table.get(float(k), g) for k in key_te])
+    Xtr, Xte = s.X(tr, traffic=False), s.X(te, traffic=False)
+    lookups = {by: LookupCorrection.fit(Xtr, y[tr], by) for by in ("hour", "zone_hour", "dist_hour")}
+    pred_table = base * np.exp(lookups["zone_hour"].predict(Xte))
     rows = [
         {"method": "base model alone (global calibration)", **_errors(obs, base)},
         {"method": "base x global median factor", **_errors(obs, base * g)},
+        {"method": "base x hour-of-day table", **_errors(obs, base * np.exp(lookups["hour"].predict(Xte)))},
         {"method": "base x pickup-zone x hour table", **_errors(obs, pred_table)},
+        {"method": "base x distance-band x hour table", **_errors(obs, base * np.exp(lookups["dist_hour"].predict(Xte)))},
     ]
     if s.traffic is not None:
         static = _fit(s.X(tr, traffic=False), y[tr], max_iter)
@@ -414,6 +448,7 @@ def fit_and_evaluate(s: TripSample, max_iter: int = 300) -> Tuple[object, List[d
         "interval_median_width_frac": float(np.median((hi - lo) / pred_model)),
         "interval_median_width_s": float(np.median(hi - lo)),
         "interval_models": qmodels,
+        "lookups": lookups,
     }
     return model, rows, extra
 
@@ -440,8 +475,12 @@ def train(base_kind: str = "straight", month: str = "2024-03", per_day: int = 20
     model, rows, extra = fit_and_evaluate(sample, max_iter)
     base_sig = {"model": tcfg.model, "speed_mps": tcfg.speed_mps, "detour": tcfg.detour,
                 "time_multiplier": tcfg.time_multiplier}
+    lookups = extra.pop("lookups")
     bundle = {"model": model, "zones": list(map(int, zones)), "base": base_sig, "features": FEATURES + TRAFFIC_FEATURES,
               "traffic": feed.to_dict(), **extra}
+    # The lookup baselines as bundles of their own, usable anywhere a correction is (``TravelConfig.eta_model``).
+    bundle["baselines"] = {name: {"model": lk, "zones": bundle["zones"], "base": base_sig, "features": FEATURES}
+                           for name, lk in lookups.items()}
     return bundle, rows, extra
 
 

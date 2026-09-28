@@ -13,7 +13,12 @@ m6_eta_<base>_report.md are.
 
 Arms (same world, same seeds):
 - ``global_multiplier``: the matcher uses the calibrated base (one speed or multiplier for the city).
+- ``hour_table`` / ``zone_hour_table`` / ``dist_hour_table``: the base times a lookup of the median
+  correction by hour of day, by pickup zone and hour, or by distance band and hour (trained with the ETA
+  model). The simple beliefs a platform would build first. ``dist_hour_table`` knows that short drives
+  are slower per km, which matters for pickups; it is the fair baseline for the learned model.
 - ``learned_eta``: the matcher uses the corrected model (noise-free).
+Deltas are reported against ``global_multiplier`` and against ``dist_hour_table``.
 
 Read the cancellation column with care. Riders cancel when the *quoted* ETA is too long, but never
 while the driver is on the way (``RiderBehavior``). An optimistic quote is therefore never punished:
@@ -80,8 +85,15 @@ def main():
         base = base.with_(**{"riders.enroute_cancel": True})
         grid[TOL] = args.late_tolerance
         suffix = "_late"
+    tables = {name: MODEL_PATH.format(base=f"{args.base}_{name}") for name in ("hour", "zone_hour", "dist_hour")}
+    missing = [p for p in tables.values() if not Path(p).exists()]
+    if missing:
+        sys.exit(f"no lookup baselines at {missing}: retrain with `python -m ridesync.ml.train eta --base {args.base}`")
     arms = [
         Arm("global_multiplier", {"belief": base_travel}),
+        Arm("hour_table", {"belief": replace(base_travel, eta_model=tables["hour"])}),
+        Arm("zone_hour_table", {"belief": replace(base_travel, eta_model=tables["zone_hour"])}),
+        Arm("dist_hour_table", {"belief": replace(base_travel, eta_model=tables["dist_hour"])}),
         Arm("learned_eta", {"belief": replace(base_travel, eta_model=model_path)}),
     ]
     t0 = time.time()
@@ -89,7 +101,7 @@ def main():
     print(f"{len(df)} runs in {time.time() - t0:.0f}s")
     RESULTS.mkdir(exist_ok=True)
     df.to_csv(RESULTS / f"m6_eta_sim_{args.base}{suffix}_runs.csv", index=False)
-    s = paired_summary(df, "global_multiplier", METRICS, list(grid))
+    summaries = {b: paired_summary(df, b, METRICS, list(grid)) for b in ("global_multiplier", "dist_hour_table")}
 
     def d(r, m, scale=1.0, digits=0):
         v = r.get(f"d_{m}")
@@ -97,7 +109,8 @@ def main():
 
     lines = [f"# M6: matcher ETA belief vs world truth (`{args.base}` base)", "",
              f"World: calibrated `{args.base}` × learned correction × lognormal noise (sigma {sigma:.3f}). "
-             "Optimal @30 s, cancellation-aware. Deltas paired against `global_multiplier` (mean ± 95% CI).",
+             "Optimal @30 s, cancellation-aware. Deltas are paired (mean ± 95% CI) against the arm named in each "
+             "table's heading.",
              "`|ETA error|` = |actual match-to-pickup time − quoted ETA|; `late > 2 min` = share of pickups more than "
              "2 min later than quoted.",
              ("Riders also give up on a late driver: once the quote plus their tolerance (lognormal, median below, "
@@ -106,21 +119,23 @@ def main():
               "Caveat: simulated riders cancel on a long *quote* but never while the driver is en route, so an "
               "optimistic belief is not punished for being late. More cancellations under honest ETAs can be that "
               "artifact alone; compare quote accuracy first."), ""]
-    for pt in s[list(grid)].drop_duplicates().to_dict("records"):
-        g = s[(s[list(grid)] == pd.Series(pt)).all(axis=1)]
+    s0 = summaries["global_multiplier"]
+    for pt in s0[list(grid)].drop_duplicates().to_dict("records"):
         title = f"{pt['drivers.num_drivers']} drivers" + (f", lateness tolerance median {pt[TOL]:.0f} s" if suffix else "")
-        lines += [f"## {title}", "",
-                  "| arm | |ETA error| s | Δ | mean error s | late > 2 min % | cancel % | Δ cancel pp | late cancel % "
-                  "| wait_all s | Δ wait_all s | pickup s | trips/h | Δ trips/h |",
-                  "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
-        for _, r in g.iterrows():
-            r = r.to_dict()
-            lines.append(
-                f"| {r['arm']} | {r['eta_abs_error_mean_s']:.0f} | {d(r, 'eta_abs_error_mean_s')} | {r['eta_error_mean_s']:+.0f} "
-                f"| {r['eta_late_2min_frac'] * 100:.1f} | {r['cancel_rate'] * 100:.1f} | {d(r, 'cancel_rate', 100, 1)} "
-                f"| {r['cancel_late_rate'] * 100:.1f} | {r['wait_all_mean_s']:.0f} | {d(r, 'wait_all_mean_s')} "
-                f"| {r['pickup_mean_s']:.0f} | {r['completed_per_hour']:.0f} | {d(r, 'completed_per_hour')} |")
-        lines.append("")
+        for baseline, s in summaries.items():
+            g = s[(s[list(grid)] == pd.Series(pt)).all(axis=1)]
+            lines += [f"## {title}: against `{baseline}`", "",
+                      "| arm | |ETA error| s | Δ | mean error s | late > 2 min % | cancel % | Δ cancel pp | late cancel % "
+                      "| wait_all s | Δ wait_all s | pickup s | trips/h | Δ trips/h |",
+                      "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+            for _, r in g.iterrows():
+                r = r.to_dict()
+                lines.append(
+                    f"| {r['arm']} | {r['eta_abs_error_mean_s']:.0f} | {d(r, 'eta_abs_error_mean_s')} | {r['eta_error_mean_s']:+.0f} "
+                    f"| {r['eta_late_2min_frac'] * 100:.1f} | {r['cancel_rate'] * 100:.1f} | {d(r, 'cancel_rate', 100, 1)} "
+                    f"| {r['cancel_late_rate'] * 100:.1f} | {r['wait_all_mean_s']:.0f} | {d(r, 'wait_all_mean_s')} "
+                    f"| {r['pickup_mean_s']:.0f} | {r['completed_per_hour']:.0f} | {d(r, 'completed_per_hour')} |")
+            lines.append("")
     text = "\n".join(lines) + "\n"
     (RESULTS / f"m6_eta_sim_{args.base}{suffix}_report.md").write_text(text, encoding="utf-8")
     print(text)

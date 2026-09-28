@@ -84,6 +84,8 @@ def train_eta(base: str, month: str, per_day: int, osrm_url: str, max_iter: int)
     bundle, rows, extra = train(base, month, per_day, osrm_url, max_iter)
     path = MODEL_PATH.format(base=base)
     Path(path).parent.mkdir(parents=True, exist_ok=True)
+    for name, b in bundle.pop("baselines").items():  # eta_<base>_hour.joblib, eta_<base>_zone_hour.joblib
+        joblib.dump(b, MODEL_PATH.format(base=f"{base}_{name}"))
     joblib.dump(bundle, path)
     lines = [f"# M6: ETA correction on the `{base}` base model (TLC {month}, Manhattan trips)", "",
              f"Train: days 1-21 ({extra['train_trips']:,} trips), test: days 22-31 ({extra['test_trips']:,} trips). "

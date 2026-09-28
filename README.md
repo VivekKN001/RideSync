@@ -93,6 +93,17 @@ caveats: [`experiments/FINDINGS.md`](experiments/FINDINGS.md).
   which Grafana loads on start: waiting riders, matches per minute, cancel rate, pickup ETA, solve time, offer
   round trip, a zone table and a run picker.
 
+**Live map** (http://localhost:8000), a live run of 2024-03-13 17:00 at 10× with 450 drivers and forecast surge.
+Drivers are grey when free, orange on the way to a pickup (with a line to the rider) and purple with a
+passenger; riders waiting for a match are pink.
+
+![Live map](docs/img/live_map.png)
+
+**Grafana** (http://localhost:3000) during the same run. The panels marked "(from Flink)", the simulated clock and
+the zone table need the `stream` profile; this capture ran without it to save memory.
+
+![Grafana dashboard](docs/img/grafana.png)
+
 ## Demand forecast, surge pricing, ETA correction (M6)
 
 ```

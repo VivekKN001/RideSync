@@ -8,7 +8,9 @@ Residual log-error sigma of the corrected model: 0.307 (robust, from the IQR: 0.
 |---|---|---|---|---|---|
 | base model alone (global calibration) | 329 | 40.8% | 30.6% | 84.3% | +67 |
 | base x global median factor | 308 | 37.0% | 28.6% | 73.9% | -7 |
+| base x hour-of-day table | 289 | 34.9% | 26.7% | 69.9% | -4 |
 | base x pickup-zone x hour table | 282 | 34.2% | 26.0% | 68.8% | +0 |
+| base x distance-band x hour table | 269 | 34.3% | 24.1% | 69.8% | -27 |
 | base x learned correction (GBT), no live traffic | 203 | 24.6% | 18.1% | 50.5% | -34 |
 | base x learned correction (GBT) + live traffic | 198 | 24.0% | 17.7% | 49.3% | -40 |
 
