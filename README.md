@@ -19,7 +19,7 @@ caveats: [`experiments/FINDINGS.md`](experiments/FINDINGS.md).
 | How long should the stream wait for late events? (M4) | 1 s cuts lost events 10×, down to 0.03%. The job waits 2 s, and nothing is silently dropped. |
 | Can we forecast demand? (M6) | 16.9% WAPE per zone per 15 min, against 21.4% for the best baseline. At 60 min ahead: 18.8% against 22.4%. |
 | How good is the ETA? (M6) | A learned correction with live traffic features: **24.0% MAPE**, against 40.8% for OSRM alone. That is at the limit of zone-level data (an oracle scores 22–29%). The 10–90% range covers 78% of trips. |
-| Does an honest ETA matter? (M6) | When riders give up on late drivers, the learned ETA adds **+176 to +461 trips/h** over one city-wide speed (tolerances of 5 to 2 min). |
+| Does an honest ETA matter? (M6) | When riders give up on late drivers, the learned ETA adds **+5% to +12% trips/h (+44 to +87)** over a simple distance × hour table, and +25% to +130% over one city-wide speed (tolerances of 5 to 2 min). |
 | Does surge help? (M6) | With a fixed fleet it only rations demand: fewer cancellations and shorter queues, fewer trips. The forecast doesn't beat current demand, in or out of sample. |
 | Does moving idle drivers help? (M7) | With slack (500 drivers), coordinated repositioning **halves cancellations (6.9% → 3.5%), cuts pickups 37–43 s, +4% trips/h** for +1.3–1.9 pp empty driving. Uncoordinated drift to hot spots is slightly worse than staying put. |
 
