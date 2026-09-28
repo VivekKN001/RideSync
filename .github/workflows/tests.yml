@@ -1,0 +1,31 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10: the oldest the shared package must support (PyFlink runs it on 3.10/3.11).
+        python-version: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,ml,live,web]" requests shapely
+      - name: Syntax check (the experiment scripts too)
+        run: python -m compileall -q ridesync experiments tests
+      # No TLC data, trained models, Kafka or Postgres here: the tests that need them skip themselves.
+      - name: Test
+        env:
+          OPENBLAS_NUM_THREADS: "1"
+        run: pytest -q

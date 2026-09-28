@@ -62,7 +62,7 @@ def main():
     df.to_csv(RESULTS / "m1_runs.csv", index=False)
     summary = paired_summary(df, "immediate_greedy", METRICS, ["drivers.num_drivers"])
     summary.to_csv(RESULTS / "m1_summary.csv", index=False)
-    text = markdown_report(summary, "M1 — batched optimal vs greedy dispatch", "immediate_greedy", "drivers.num_drivers")
+    text = markdown_report(summary, "M1 â€” batched optimal vs greedy dispatch", "immediate_greedy", "drivers.num_drivers")
     (RESULTS / "m1_report.md").write_text(text, encoding="utf-8")
     print(text)
 

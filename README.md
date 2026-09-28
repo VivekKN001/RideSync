@@ -1,5 +1,7 @@
 # RideSync
 
+[![tests](https://github.com/VivekKN001/RideSync/actions/workflows/tests.yml/badge.svg)](https://github.com/VivekKN001/RideSync/actions/workflows/tests.yml)
+
 Real-time ride-hailing dispatch: batched optimal bipartite matching (Hungarian) vs greedy,
 evaluated on a measurable cost function (wait time, cancellations, driver idle time), on real Manhattan
 demand (NYC TLC, March 2024) and road times (OSRM), live over Kafka + Flink, with ML for demand, ETA and surge.

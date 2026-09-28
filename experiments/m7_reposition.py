@@ -66,13 +66,15 @@ def _table(s: pd.DataFrame, fleet: int, baseline: str) -> list:
         r = r.to_dict()
         if r["arm"] == baseline:
             r = {k: v for k, v in r.items() if not k.startswith(("d_", "ci_"))}
+        cut = r["moves_dispatched_frac"]
+        cut = "" if cut != cut else f"{cut * 100:.0f}"
         lines.append(
             f"| {r['arm']} | {r['cancel_rate'] * 100:.1f} | {_d(r, 'cancel_rate', 100, 1)} | {r['cancel_late_rate'] * 100:.1f} "
             f"| {r['wait_all_mean_s']:.0f} | {_d(r, 'wait_all_mean_s')} | {r['pickup_mean_s']:.0f} | {_d(r, 'pickup_mean_s')} "
             f"| {r['completed_per_hour']:.0f} | {_d(r, 'completed_per_hour', 1, 1)} "
             f"| {r['empty_frac'] * 100:.1f} | {_d(r, 'empty_frac', 100, 1)} "
             f"| {r['moves_per_driver_hour']:.2f} | {r['reposition_km_per_hour']:.0f} "
-            f"| {'' if r['moves_dispatched_frac'] != r['moves_dispatched_frac'] else f'{r['moves_dispatched_frac'] * 100:.0f}'} |")
+            f"| {cut} |")
     return lines
 
 
