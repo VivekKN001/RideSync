@@ -278,11 +278,29 @@ and the average rider waits 179 s less. The cancellation and trips/h columns loo
 simulator artifact: riders cancel on a long *quote* but never while the driver is on the way. The global
 matcher quotes 4.3 minutes too optimistically, so riders accept and then wait 512 s on average. The learned
 matcher quotes truthfully, and some riders decline up front. In reality, many of the misled riders would cancel
-mid-pickup. The fair comparison is quote accuracy and wait, and there the learned ETA clearly wins. Getting
-throughput right would need riders who can cancel while the driver is en route (possible later work).
+mid-pickup. The fair comparison is quote accuracy and wait, and there the learned ETA clearly wins.
+
+**With riders who give up on late drivers, the learned ETA wins on every measure** (`riders.enroute_cancel`,
+`results/m6_eta_sim_straight_late_report.md`). A matched rider whose driver hasn't arrived by the quote plus a
+lateness tolerance cancels, and the driver stops where it is. No public data exists for that tolerance, so it
+runs at three medians (lognormal, σ 0.5). Paired, 6 seeds, 400 drivers:
+
+| lateness tolerance (median) | global multiplier: cancel / trips/h | learned ETA: cancel / trips/h | Δ trips/h |
+|---|---|---|---|
+| 2 min | 69.0% / 348 | 28.0% / 809 | **+461 ± 6** |
+| 3 min | 55.4% / 501 | 24.6% / 847 | **+346 ± 14** |
+| 5 min | 37.2% / 705 | 21.6% / 881 | **+176 ± 8** |
+
+The earlier cancellation result really was the artifact. Once an optimistic quote costs something, a matcher
+that believes one city-wide speed at rush hour loses a third to two thirds of its riders to late drivers:
+late cancellations are 35–69% of requests, against 2–11% with the learned ETA. How large the effect is depends
+on the tolerance. That the learned ETA wins does not. The global arm is an extreme case: calibrated over all
+hours, it is 4.3 minutes optimistic at 17:00–20:00. A real platform would at least use per-hour
+calibration. (`wait_all` looks better for the global arm at short tolerances only because riders who cancel
+stop waiting.)
 
 **Framing:** "A GBT demand forecast beats the best baseline by ~5 pp WAPE. A learned ETA correction with
-live traffic halves travel-time error (24% MAPE, at the limit of zone-level data), and in simulation it cuts
-late pickups from 79% to 13%. Surge with a fixed fleet trades
+live traffic halves travel-time error (24% MAPE, at the limit of zone-level data). In simulation it cuts
+late pickups from 79% to 13%, and when riders give up on late drivers it adds 25–130% trips/h. Surge with a fixed fleet trades
 throughput for shorter queues and fewer cancellations, mostly where drivers are scarce. Its real benefit
 depends on a driver-supply response, which is out of scope."

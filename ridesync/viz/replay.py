@@ -34,8 +34,9 @@ DEFAULT_SLICE = "data/processed/trips_2024-03-13_1700_3h_manhattan_f0.1.parquet"
 ZONES_ZIP = "data/raw/taxi_zones.zip"
 GRID_DEG = 29.0                      # Manhattan's street grid is about 29 degrees east of true north
 LAT0, LON0 = 40.7580, -73.9855       # Times Square: origin of the local metric frame
-STATE_CODE = {DriverState.IDLE: 0, DriverState.EN_ROUTE: 1, DriverState.ON_TRIP: 2}
-REASON_CODE = {None: 0, "no_match": 1, "eta_quote": 2}
+# The replay's arms don't reposition or cancel en route; if a config does, those show as free / quote cancels.
+STATE_CODE = {DriverState.IDLE: 0, DriverState.EN_ROUTE: 1, DriverState.ON_TRIP: 2, DriverState.REPOSITIONING: 0}
+REASON_CODE = {None: 0, "no_match": 1, "eta_quote": 2, "late_driver": 2}
 SERIES_STEP_S = 30.0
 
 ARMS = {

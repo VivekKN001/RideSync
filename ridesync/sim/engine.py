@@ -5,10 +5,12 @@ and calls the same matching strategies the live matcher service will use.
 
 Lifecycle
 ---------
-Rider:  WAITING -> MATCHED -> ON_TRIP -> DONE, or WAITING -> CANCELLED
+Rider:  WAITING -> MATCHED -> ON_TRIP -> DONE, or WAITING -> CANCELLED, or (with
+        ``riders.enroute_cancel``) MATCHED -> CANCELLED when the driver is late
         With surge pricing (M6) a rider first sees a price and may not request: PENDING -> PRICED_OUT,
         or PENDING again (one retry a few minutes later).
 Driver: IDLE -> EN_ROUTE -> ON_TRIP -> IDLE (an ON_TRIP driver may hold a queued next rider)
+        With repositioning (M7): IDLE -> REPOSITIONING -> IDLE, or -> EN_ROUTE if dispatched on the way.
 
 Two travel models (M6): ``travel`` is how long drives really take (the world), and ``belief`` is
 what the matcher assumes when it builds ETA matrices and quotes. They are the same object unless
@@ -27,6 +29,7 @@ from __future__ import annotations
 import heapq
 from collections import Counter
 from dataclasses import dataclass, field, replace
+from datetime import timedelta
 from enum import Enum
 from typing import Dict, Optional, Set
 
@@ -37,6 +40,7 @@ from ..geo import Route, TravelTimeModel
 from ..data.slices import run_start_and_frac
 from ..matching import get_strategy
 from ..pricing import DemandEstimator, conversion, zone_prices
+from ..reposition import Mover, drift_moves, historical_demand, plan_moves, zone_targets
 from ..routing import make_travel_model
 from .config import SimConfig
 from .demand import RiderSpec, generate_riders, initial_driver_positions
@@ -102,11 +106,15 @@ class Driver:
     rider_id: Optional[int] = None
     next_rider_id: Optional[int] = None
     time_in: Dict[DriverState, float] = field(default_factory=lambda: {s: 0.0 for s in DriverState})
+    move: Optional[dict] = None  # the repositioning move in progress (M7)
 
     # ``ridesync.dispatch.DriverView``. Idle legs are stationary, so for an idle driver this is its location.
     @property
     def pos(self) -> np.ndarray:
         return self.leg.end
+
+    def position_at(self, t: float) -> np.ndarray:
+        return self.leg.position(t)
 
     @property
     def free_at(self) -> float:
@@ -119,8 +127,9 @@ class Driver:
 
 # Event kinds, ordered so that at equal timestamps world events run before dispatch,
 # and new prices apply before the requests at the same instant.
-REQUEST, PATIENCE, ARRIVE, TRIP_DONE, DISPATCH = range(5)
+REQUEST, PATIENCE, ARRIVE, LATE, TRIP_DONE, MOVE_DONE, DISPATCH = range(7)
 PRICE = -1
+REPOSITION = DISPATCH + 1  # after dispatch at equal timestamps: riders get the free drivers first
 
 
 class Simulation:
@@ -158,6 +167,11 @@ class Simulation:
             self.zones = ZoneIndex.load(cfg.pricing.zones_path)
             self.neighbours = self.zones.neighbours(cfg.pricing.pool_radius_m) if cfg.pricing.pool_radius_m > 0 else None
             self.estimator = DemandEstimator(cfg.pricing, self.start, self.sample_frac, fc)
+        self.moves: list = []  # every repositioning move (M7), see ``_start_move``
+        self.repo_on = cfg.reposition.policy != "none"
+        self.repo_estimator: Optional[DemandEstimator] = None
+        if self.repo_on:
+            self._init_reposition()
 
     # ----------------------------------------------------------------- events
     def _schedule(self, t: float, kind: int, *args) -> None:
@@ -178,6 +192,8 @@ class Simulation:
         if not self._event_driven():
             self._schedule(self.cfg.dispatch.interval_s, DISPATCH)
         self._schedule_pricing()
+        if self.repo_on:
+            self._schedule(self.cfg.reposition.interval_s, REPOSITION)
 
         handlers = self._handlers()
         while self._events:
@@ -212,13 +228,20 @@ class Simulation:
             REQUEST: self._on_request,
             PATIENCE: self._on_patience,
             ARRIVE: self._on_arrive,
+            LATE: self._on_late,
             TRIP_DONE: self._on_trip_done,
+            MOVE_DONE: self._on_move_done,
             DISPATCH: self._on_dispatch,
             PRICE: self._on_price,
+            REPOSITION: self._on_reposition,
         }
 
     def _on_request(self, rid: int) -> None:
         r = self.riders[rid]
+        if self.repo_estimator is not None and r.attempt == 0:  # every app open is demand, priced out or not
+            if r.zone is None:
+                r.zone = self._zone_of(r.spec.origin)
+            self.repo_estimator.add_open(r.zone, self.now)
         if self.pricing_on and not self._quote(r):
             return
         r.state = RiderState.WAITING
@@ -234,6 +257,8 @@ class Simulation:
 
     def _on_arrive(self, did: int, rid: int) -> None:
         d, r = self.drivers[did], self.riders[rid]
+        if r.state is not RiderState.MATCHED or d.rider_id != rid:
+            return  # the rider gave up on a late driver before it got there
         r.state, r.pickup_t = RiderState.ON_TRIP, self.now
         d.leg = Leg(self._route(d.leg.end, r.spec.dest), self.now)
         self._set_state(d, DriverState.ON_TRIP)
@@ -305,7 +330,11 @@ class Simulation:
             return "quote_cancelled"
         r.state = RiderState.MATCHED
         self._publish_rider(r, "matched")
-        if d.state is DriverState.IDLE:
+        if self.cfg.riders.enroute_cancel:
+            self._schedule(self.now + eta_s + self._lateness_tolerance(r), LATE, r.spec.id)
+        if d.state is DriverState.REPOSITIONING:
+            self._end_move(d, dispatched=True)  # the pickup starts from where it is on the way
+        if d.state in (DriverState.IDLE, DriverState.REPOSITIONING):
             self._start_pickup(d, r)
         else:
             d.next_rider_id = r.spec.id
@@ -328,6 +357,8 @@ class Simulation:
             if d.state is DriverState.IDLE or (
                     horizon > 0 and d.state is DriverState.ON_TRIP and not d.has_next and d.free_at - self.now <= horizon):
                 supply[self._zone_of(d.pos)] += 1
+            elif d.state is DriverState.REPOSITIONING:
+                supply[self._zone_of(d.position_at(self.now))] += 1
         waiting = Counter(r.zone for r in self.waiting.values())
         zones = (set(supply) | set(waiting) | set(self.estimator.recent)) - {0}  # 0 = outside every zone
         if self.estimator.fc is not None:
@@ -364,6 +395,84 @@ class Simulation:
             r.state, r.cancel_t = RiderState.PRICED_OUT, self.now
         return False
 
+    # ----------------------------------------------------------- repositioning
+    def _init_reposition(self) -> None:
+        from ..stream.zones import ZoneIndex
+
+        rc = self.cfg.reposition
+        if rc.policy not in ("drift", "planned"):
+            raise ValueError(f"unknown reposition policy {rc.policy!r}; use 'none', 'drift' or 'planned'")
+        if not self.pricing_on or rc.zones_path != self.cfg.pricing.zones_path:
+            self.zones = ZoneIndex.load(rc.zones_path)
+        self.repo_targets = zone_targets(self.zones, rc.points_path)
+        needs_model = rc.policy == "drift" or rc.demand == "forecast"
+        fc = None
+        if needs_model:
+            from ..ml.demand import load_or_none
+
+            fc = load_or_none(rc.forecast_path)
+            if fc is None:
+                raise RuntimeError(f"repositioning ({rc.policy}, {rc.demand}) needs the demand model at "
+                                   f"{rc.forecast_path}: run `python -m ridesync.ml.train demand`")
+            if self.start is None:
+                raise ValueError("repositioning with historical or forecast demand needs the run's start time")
+        self.repo_fc = fc
+        if rc.policy == "planned":
+            self.repo_estimator = DemandEstimator(rc, self.start, self.sample_frac, fc if rc.demand == "forecast" else None)
+
+    def _on_reposition(self) -> None:
+        rc = self.cfg.reposition
+        idle = [d for d in self.drivers if d.state is DriverState.IDLE]
+        movers = [Mover(d.id, d.pos, self._zone_of(d.pos), self.now - d.state_since) for d in idle]
+        if hasattr(self.belief, "set_time"):
+            self.belief.set_time(self.now)
+        if rc.policy == "drift":
+            usual = historical_demand(self.repo_fc, self.start + timedelta(seconds=self.now))
+            moves = drift_moves(movers, usual, self.repo_targets, self.belief, rc, len(idle))
+        else:
+            horizon = self.cfg.dispatch.chain_horizon_s
+            supply: Counter = Counter()
+            for d in self.drivers:
+                if d.state is DriverState.IDLE:
+                    supply[self._zone_of(d.pos)] += 1
+                elif d.state is DriverState.REPOSITIONING:  # already on its way: counts where it is going
+                    supply[d.move["zone"]] += 1
+                elif (horizon > 0 and d.state is DriverState.ON_TRIP and not d.has_next
+                      and d.free_at - self.now <= horizon):
+                    supply[self._zone_of(d.pos)] += 1
+            demand = self.repo_estimator.estimate(sorted(self.repo_targets), self.now)
+            moves = plan_moves(movers, supply, demand, self.repo_targets, self.belief, rc, len(idle))
+        for did, zone in moves:
+            self._start_move(self.drivers[did], zone)
+        if self.now + rc.interval_s < self.cfg.demand.duration_s:
+            self._schedule(self.now + rc.interval_s, REPOSITION)
+
+    def _start_move(self, d: Driver, zone: int) -> None:
+        route = self._route(d.pos, self.repo_targets[zone])
+        if route.duration_s <= 0:
+            return
+        d.leg = Leg(route, self.now)
+        d.move = {"driver": d.id, "zone": zone, "t0": self.now, "planned_s": route.duration_s, "route": route,
+                  "end_t": None, "dispatched": False}
+        self.moves.append(d.move)
+        self._set_state(d, DriverState.REPOSITIONING)
+        self._publish_driver(d)
+        self._schedule(d.leg.t1, MOVE_DONE, d.id, len(self.moves) - 1)
+
+    def _end_move(self, d: Driver, dispatched: bool) -> None:
+        d.move["end_t"], d.move["dispatched"] = self.now, dispatched
+        d.move = None
+
+    def _on_move_done(self, did: int, move_no: int) -> None:
+        d = self.drivers[did]
+        if d.state is not DriverState.REPOSITIONING or d.move is not self.moves[move_no]:
+            return  # dispatched on the way: that move is over
+        self._end_move(d, dispatched=False)
+        d.leg = Leg(Route.stationary(d.leg.end), self.now)
+        self._set_state(d, DriverState.IDLE)
+        self._publish_driver(d)
+        self._request_dispatch()
+
     # ------------------------------------------------------------ transitions
     def _route(self, a: np.ndarray, b: np.ndarray) -> Route:
         if hasattr(self.travel, "set_time"):
@@ -376,6 +485,29 @@ class Simulation:
         self._set_state(d, DriverState.EN_ROUTE)
         self._publish_driver(d)
         self._schedule(d.leg.t1, ARRIVE, d.id, r.spec.id)
+
+    def _lateness_tolerance(self, r: Rider) -> float:
+        # Its own seeded stream per rider: the other draws, and every arm's riders, stay the same.
+        rb = self.cfg.riders
+        z = np.random.default_rng([self.cfg.seed, 8, r.spec.id]).standard_normal()
+        return rb.lateness_tolerance_median_s * float(np.exp(rb.lateness_tolerance_sigma * z))
+
+    def _on_late(self, rid: int) -> None:
+        """The quoted ETA plus the rider's tolerance has passed. Still not picked up: the rider cancels."""
+        r = self.riders[rid]
+        if r.state is not RiderState.MATCHED:
+            return
+        d = self.drivers[r.driver_id]
+        self._cancel(r, "late_driver")
+        if d.state is DriverState.EN_ROUTE and d.rider_id == rid:
+            d.leg = Leg(Route.stationary(d.leg.position(self.now)), self.now)  # stops where it is
+            d.rider_id = None
+            self._set_state(d, DriverState.IDLE)
+            self._publish_driver(d)
+            self._request_dispatch()
+        elif d.next_rider_id == rid:  # queued behind the driver's current trip
+            d.next_rider_id = None
+            self._publish_driver(d)
 
     def _cancel(self, r: Rider, reason: str) -> None:
         self.waiting.pop(r.spec.id, None)

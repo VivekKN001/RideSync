@@ -62,6 +62,7 @@ def summarize(sim: Simulation) -> Dict[str, float]:
         "cancel_rate": len(cancelled) / n if n else float("nan"),
         "cancel_no_match_rate": sum(r.cancel_reason == "no_match" for r in cancelled) / n if n else float("nan"),
         "cancel_eta_rate": sum(r.cancel_reason == "eta_quote" for r in cancelled) / n if n else float("nan"),
+        "cancel_late_rate": sum(r.cancel_reason == "late_driver" for r in cancelled) / n if n else float("nan"),
         "wait_mean_s": _mean(wait),
         "wait_p50_s": _pct(wait, 50),
         "wait_p90_s": _pct(wait, 90),
@@ -96,4 +97,32 @@ def summarize(sim: Simulation) -> Dict[str, float]:
         "eta_error_mean_s": _mean(eta_err),
         "eta_abs_error_mean_s": _mean(np.abs(eta_err)),
         "eta_late_2min_frac": _mean(eta_err > 120.0),
+        # M7: repositioning. Moves started in the window; distance along the route actually driven.
+        **_moves(sim, lo, hi, hours),
+        "driver_reposition_frac": total[DriverState.REPOSITIONING] / driver_time,
     }
+
+
+def _moves(sim: Simulation, lo: float, hi: float, hours: float) -> Dict[str, float]:
+    moves = [m for m in sim.moves if lo <= m["t0"] < hi]
+    # The straight-line model draws a straight path; scale it to road distance like the fares do.
+    scale = sim.cfg.fare.road_factor if sim.cfg.travel.model == "straight" else 1.0
+    km = sum(_driven_m(m["route"], m["end_t"] - m["t0"]) for m in moves) * scale / 1000.0
+    n = len(moves)
+    return {
+        "moves_per_driver_hour": n / (len(sim.drivers) * hours) if hours else float("nan"),
+        "reposition_km_per_hour": km / hours if hours else float("nan"),
+        "moves_dispatched_frac": sum(m["dispatched"] for m in moves) / n if n else float("nan"),
+        "move_planned_mean_s": _mean(np.array([m["planned_s"] for m in moves])),
+    }
+
+
+def _driven_m(route, elapsed_s: float) -> float:
+    """Metres along the route's path up to elapsed_s (the whole route if it finished)."""
+    upto = route.cum_s <= elapsed_s
+    pts = route.path[upto]
+    if elapsed_s < route.duration_s:
+        pts = np.vstack([pts, route.position(elapsed_s)[None, :]])
+    if len(pts) < 2:
+        return 0.0
+    return float(haversine_pairs_m(pts[:-1], pts[1:]).sum())

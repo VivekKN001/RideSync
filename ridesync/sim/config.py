@@ -53,13 +53,18 @@ class RiderBehavior:
     - Unmatched patience: a rider still waiting for a match after a lognormal time cancels.
     - ETA quote: once matched, a rider cancels right away if the quoted pickup ETA is
       above their tolerance, which is also lognormal.
-    - No cancellations while the driver is en route (for now).
+    - Late driver (``enroute_cancel``, off by default): a matched rider whose driver hasn't arrived by
+      the quoted ETA plus a lognormal lateness tolerance cancels, and the driver stops where it is.
+      Without it an optimistic quote is never punished: the rider accepts and simply waits longer.
     """
 
     patience_median_s: float = 300.0
     patience_sigma: float = 0.5
     eta_tolerance_median_s: float = 600.0
     eta_tolerance_sigma: float = 0.4
+    enroute_cancel: bool = False
+    lateness_tolerance_median_s: float = 180.0
+    lateness_tolerance_sigma: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -153,6 +158,34 @@ class PricingConfig:
 
 
 @dataclass(frozen=True)
+class RepositionConfig:
+    """Moving idle drivers toward demand (M7). Off (``policy="none"``) by default: the simulation is unchanged.
+
+    Every ``interval_s`` the policy picks drivers idle for at least ``min_idle_s`` and sends them to a
+    point in another zone; at most ``max_share`` of the idle fleet moves per round, and never on a drive
+    longer than ``max_move_s``. A moving driver can be dispatched on the way (``ridesync.reposition``).
+
+    - ``drift``: what drivers do by themselves: head for the nearest zone that is usually busy at this
+      time of the week (top ``1 - hot_quantile`` of zones by historical demand). No coordination.
+    - ``planned``: share the free drivers out in proportion to expected demand over ``horizon_s`` (from
+      ``demand``: ``reactive`` or ``forecast``, as for surge pricing) and fill the gaps from zones with
+      a surplus, choosing who goes where by minimum total drive time.
+    """
+
+    policy: str = "none"      # "none", "drift" or "planned"
+    demand: str = "reactive"  # planned only: "reactive" or "forecast"
+    interval_s: float = 300.0
+    horizon_s: float = 900.0
+    min_idle_s: float = 120.0
+    max_move_s: float = 600.0
+    max_share: float = 0.5
+    hot_quantile: float = 0.75
+    forecast_path: str = "data/models/demand.joblib"
+    zones_path: str = "data/processed/taxi_zones.json"
+    points_path: str = "data/models/zone_points.parquet"
+
+
+@dataclass(frozen=True)
 class SimConfig:
     seed: int = 0
     city: CityConfig = field(default_factory=CityConfig)
@@ -165,6 +198,7 @@ class SimConfig:
     belief: Optional[TravelConfig] = None
     pricing: PricingConfig = field(default_factory=PricingConfig)
     fare: FareConfig = field(default_factory=FareConfig)
+    reposition: RepositionConfig = field(default_factory=RepositionConfig)
 
     def with_(self, **overrides) -> "SimConfig":
         """Override nested fields with dotted keys, e.g. ``with_(**{"dispatch.interval_s": 2})``."""

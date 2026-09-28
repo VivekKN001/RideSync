@@ -26,14 +26,14 @@ from typing import Callable, Dict, List, Optional
 
 from ..geo import TravelTimeModel
 from ..sim.config import SimConfig
-from ..sim.engine import DISPATCH, REQUEST, Driver, DriverState, Rider, RiderState, Simulation
+from ..sim.engine import DISPATCH, REPOSITION, REQUEST, Driver, DriverState, Rider, RiderState, Simulation
 from .bus import Bus
 from .schema import (
     CONTROL_TYPES, DISPATCH_BATCHES, DISPATCH_OFFERS, DRIVER_EVENTS, OFFER_RESPONSES, RIDER_EVENTS, VERSION,
     WORLD_TOPICS, ZONE_PRICES, run_config,
 )
 
-PING = DISPATCH + 1  # after dispatch at equal timestamps
+PING = REPOSITION + 1  # after dispatch at equal timestamps (repositioning is offline only)
 
 
 @dataclass(frozen=True)
@@ -57,6 +57,10 @@ class LiveSimulation(Simulation):
                  travel: Optional[TravelTimeModel] = None, run_id: Optional[str] = None):
         if cfg.dispatch.interval_s <= 0:
             raise ValueError("live mode dispatches in batches: set dispatch.interval_s > 0")
+        if cfg.riders.enroute_cancel:
+            raise ValueError("riders.enroute_cancel is offline only: the live matcher doesn't model it yet")
+        if cfg.reposition.policy != "none":
+            raise ValueError("repositioning is offline only: the live matcher doesn't track repositioning drivers")
         super().__init__(cfg, travel)
         self.live = live
         self.bus = bus

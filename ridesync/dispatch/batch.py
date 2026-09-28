@@ -30,6 +30,7 @@ class DriverState(Enum):
     IDLE = "idle"
     EN_ROUTE = "en_route"
     ON_TRIP = "on_trip"
+    REPOSITIONING = "repositioning"  # M7: driving empty toward demand; free to dispatch on the way
 
 
 class DriverView(Protocol):
@@ -50,15 +51,20 @@ class DriverView(Protocol):
 
 
 def select_supply(drivers: Sequence[DriverView], now: float, horizon_s: float) -> Tuple[List[int], np.ndarray, np.ndarray]:
-    """Idle drivers plus on-trip drivers finishing within the chaining horizon.
+    """Idle and repositioning drivers, plus on-trip drivers finishing within the chaining horizon.
 
     Returns driver ids, positions (D, 2) and ETA offsets (D,): the time left on the current trip.
+    A repositioning driver (M7, offline engine only) is where it is now on its way, via ``position_at``.
     """
     ids, positions, offsets = [], [], []
     for d in drivers:
         if d.state is DriverState.IDLE:
             ids.append(d.id)
             positions.append(d.pos)
+            offsets.append(0.0)
+        elif d.state is DriverState.REPOSITIONING:
+            ids.append(d.id)
+            positions.append(d.position_at(now))
             offsets.append(0.0)
         elif horizon_s > 0 and d.state is DriverState.ON_TRIP and not d.has_next and d.free_at - now <= horizon_s:
             ids.append(d.id)
