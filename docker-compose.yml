@@ -1,5 +1,12 @@
 # RideSync stack. Services are added milestone by milestone; see README.
 #
+# Nothing restarts on its own (restart: "no"), so Docker Desktop starts no containers at launch.
+# Plain `docker compose up -d` starts only Kafka; the rest sit behind profiles:
+#   stream  -> Flink (jobmanager + taskmanager)      routing -> OSRM
+#   storage -> ClickHouse, Postgres, Grafana         prep / submit -> one-off jobs
+# When you're done: `docker compose --profile "*" stop`. A plain `docker compose stop` (or `down`)
+# only acts on active profiles, i.e. Kafka alone, and leaves Flink/ClickHouse/Grafana running.
+#
 # M2 (routing, on demand: live demos use the fitted straight-line model):
 #   python -m ridesync.data.fetch --osm          # NYC road network extract -> data/osm/nyc.osm.pbf
 #   docker compose --profile prep run --rm osrm-prep   # one-off preprocessing (~5 min, ~3 GB RAM)
@@ -16,8 +23,8 @@
 # M4 (stream features, Flink UI on http://localhost:8081):
 #   docker build -t ridesync-flink:1.20 docker/flink   # once
 #   python -m ridesync.stream.zones                   # once: data/processed/taxi_zones.json
-#   docker compose up -d flink-jobmanager flink-taskmanager
-#   docker compose run --rm flink-submit              # submits ridesync/stream/job.py
+#   docker compose --profile stream up -d
+#   docker compose --profile stream run --rm flink-submit              # submits ridesync/stream/job.py
 
 x-osrm-image: &osrm-image ghcr.io/project-osrm/osrm-backend:v6.0.0
 
@@ -64,7 +71,7 @@ services:
     volumes:
       - kafka-data:/var/lib/kafka/data
     mem_limit: 1g
-    restart: unless-stopped
+    restart: "no"
 
   osrm-prep:
     image: *osrm-image
@@ -90,9 +97,10 @@ services:
     ports:
       - "5000:5000"
     mem_limit: 2g
-    restart: unless-stopped
+    restart: "no"
 
   flink-jobmanager:
+    profiles: ["stream"]
     image: ridesync-flink:1.20
     command: jobmanager
     ports:
@@ -101,9 +109,10 @@ services:
       FLINK_PROPERTIES: *flink-properties
     volumes: *flink-volumes
     mem_limit: 900m
-    restart: unless-stopped
+    restart: "no"
 
   flink-taskmanager:
+    profiles: ["stream"]
     image: ridesync-flink:1.20
     command: taskmanager
     depends_on: [flink-jobmanager]
@@ -111,7 +120,7 @@ services:
       FLINK_PROPERTIES: *flink-properties
     volumes: *flink-volumes
     mem_limit: 1700m
-    restart: unless-stopped
+    restart: "no"
 
   flink-submit:
     # One-off: submits the PyFlink job to the running cluster, detached. Extra args go to the job.
@@ -125,6 +134,7 @@ services:
 
   clickhouse:
     # Event history and time series. Reads the Kafka topics itself (docker/clickhouse/init).
+    profiles: ["storage"]
     image: clickhouse/clickhouse-server:24.8
     ports:
       - "8123:8123"
@@ -142,10 +152,11 @@ services:
       nofile: {soft: 262144, hard: 262144}
     depends_on: [kafka]
     mem_limit: 1g
-    restart: unless-stopped
+    restart: "no"
 
   postgres:
     # Trip ledger (ridesync.sinks.postgres writes it).
+    profiles: ["storage"]
     image: postgres:16-alpine
     ports:
       - "5432:5432"
@@ -157,11 +168,12 @@ services:
       - postgres-data:/var/lib/postgresql/data
       - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     mem_limit: 256m
-    restart: unless-stopped
+    restart: "no"
 
   grafana:
     # Live dashboards on http://localhost:3000 (no login needed locally). Dashboards live in the repo:
     # edit docker/grafana/make_dashboard.py, run it, and Grafana picks the file up.
+    profiles: ["storage"]
     image: grafana/grafana:11.4.0
     ports:
       - "3000:3000"
@@ -178,7 +190,7 @@ services:
       - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
     depends_on: [clickhouse, postgres]
     mem_limit: 300m
-    restart: unless-stopped
+    restart: "no"
 
 volumes:
   kafka-data:

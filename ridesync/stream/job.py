@@ -2,8 +2,8 @@
 
 Submitted inside the Flink cluster (see docker-compose.yml):
 
-    docker compose run --rm flink-submit                          # defaults below
-    docker compose run --rm flink-submit --lateness-ms 5000
+    docker compose --profile stream run --rm flink-submit                          # defaults below
+    docker compose --profile stream run --rm flink-submit --lateness-ms 5000
 
     rider-events ─┐                                        ┌─► zone-features
                   ├─► watermarks ─► by rider/driver ─► by (run, zone) ─┤
