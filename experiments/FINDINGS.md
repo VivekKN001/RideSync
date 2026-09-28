@@ -228,7 +228,11 @@ Showing surge increasing throughput would need a driver-supply response, which t
 
 **The forecast still doesn't beat reacting to current demand.** Forecast − reactive stays within noise in
 every cell (≤ 0.4 pp cancel, ≤ 4 trips/h). Reprices happen every 5 minutes, so reactive demand is at most
-about 5 minutes stale, and a 16.9% vs 21.4% WAPE difference changes few 0.25-step decisions. The forecast would
+about 5 minutes stale, and a 16.9% vs 21.4% WAPE difference changes few 0.25-step decisions.
+The slice (March 13) falls inside the forecast's training days. That should flatter the forecast, so it
+isn't why the forecast failed to win. The same comparison on a test day (Wed March 27, 17:00–20:00, ε 0.5, 6
+seeds) gives the same answer: forecast − reactive is within noise at 300/400/500 drivers (≤ 0.25 pp cancel,
+≤ 1.5 trips/h), and revenue is $140–526/h lower. The forecast would
 matter for a slower lever, such as moving drivers ahead of demand (M7).
 
 ## ETA correction (6c)
@@ -304,3 +308,66 @@ live traffic halves travel-time error (24% MAPE, at the limit of zone-level data
 late pickups from 79% to 13%, and when riders give up on late drivers it adds 25–130% trips/h. Surge with a fixed fleet trades
 throughput for shorter queues and fewer cancellations, mostly where drivers are scarce. Its real benefit
 depends on a driver-supply response, which is out of scope."
+
+---
+
+# M7: moving idle drivers toward demand
+
+`experiments/m7_reposition.py`, `results/m7_reposition_report.md`. Demand is Wed 2024-03-27, 17:00–20:00, a
+test day, so neither the forecast nor drift's "usual" map has seen it. Dispatch is optimal @30 s,
+cancellation-aware, on straight-line times with per-trip noise (σ 0.27, the ETA model's residual). Riders give
+up on late drivers (median tolerance 3 min). Every 5 minutes a policy may move drivers who have been idle
+≥ 2 min: at most half the idle fleet, on drives ≤ 10 min. A moving driver can be dispatched on the way.
+6 seeds, paired.
+
+- `none`: drivers wait where their last trip ended (all earlier milestones).
+- `drift`: each driver heads for the nearest usually-busy zone (top quarter by historical demand for that
+  weekday and time), with no coordination. This is what drivers do on their own, and it's the fair baseline.
+- `planned`: the platform shares the free drivers out in proportion to expected demand and fills the
+  shortfalls from surplus zones by minimum total drive time. Demand is `reactive` (last 15 min) or
+  `forecast` (M6 model).
+
+| drivers | arm | Δ cancel pp | Δ wait_all s | Δ trips/h | Δ empty driving pp | reposition km/h | moves/driver-h |
+|---|---|---|---|---|---|---|---|
+| 300 | planned_forecast | −0.7 ± 0.8 | −1 ± 2 | +8.5 ± 9.5 | −0.0 ± 0.4 | 1 | 0.00 |
+| 400 | drift | +0.5 ± 0.4 | +3 ± 3 | −5.5 ± 4.8 | +0.5 ± 0.3 | 26 | 0.10 |
+| 400 | planned_reactive | −1.1 ± 0.5 | −6 ± 2 | **+13.1 ± 5.6** | +0.8 ± 0.3 | 50 | 0.17 |
+| 400 | planned_forecast | −0.9 ± 0.2 | −9 ± 2 | **+10.2 ± 2.4** | +0.6 ± 0.2 | 44 | 0.15 |
+| 500 | drift | +0.4 ± 0.5 | +11 ± 4 | −5.2 ± 5.9 | +1.7 ± 0.1 | 75 | 0.19 |
+| 500 | planned_reactive | **−3.7 ± 0.3** | **−42 ± 6** | **+44.7 ± 3.5** | +1.9 ± 0.2 | 246 | 0.50 |
+| 500 | planned_forecast | **−3.5 ± 0.3** | **−37 ± 2** | **+41.2 ± 3.3** | +1.3 ± 0.1 | 197 | 0.40 |
+
+All deltas are against `none`. At 500 drivers `none` cancels 6.9% of requests with 204 s waits.
+
+**Planned repositioning works where there is slack.** At 500 drivers it cuts cancellations from 6.9% to
+3.2–3.5% and pickups by 37–43 s, for +4% trips/h. At 400 the gain is +1%. At 300 there's nothing to move:
+drivers are never idle for 2 minutes, so the policy almost never fires. This is the opposite of what we
+expected before the run (biggest gain under scarcity). Repositioning can't create drivers; it can only put
+idle ones in better places, so it needs idle drivers to work with. It complements the M1/M2 result, where
+batching helped most under scarcity.
+
+**The cost is visible and small.** Empty driving (to pickups and repositioning) rises by 1.3–1.9 pp of driver
+time. Part of the extra repositioning distance comes back as shorter pickups: most moves (57–82%) end with the
+driver dispatched before arriving. That's about 0.2 extra trips per extra empty km at the 10% scale.
+
+**Drivers drifting on their own make things slightly worse.** Sending everyone to the usual hot spots without
+coordination bunches them. At 500 drivers waits rise by 11 s and empty driving by 1.7 pp, with no gain in
+trips. Against `drift`, the planned policy gains +46 to +50 trips/h and −3.9 to −4.2 pp cancellations at 500
+drivers. The value is in the coordination, not in simply moving.
+
+**The forecast still doesn't beat current demand, but it's more economical.** `planned_forecast` and
+`planned_reactive` are within noise of each other on trips, waits and cancellations. The forecast plan makes 20%
+fewer moves (197 vs 246 km/h) for the same gain, a slightly better return per empty km (0.21 vs 0.18 trips/km).
+The hypothesis that a slow lever would finally make the forecast pay off is only weakly supported.
+
+**Move cap.** Allowing only 5-minute moves (vs 10) cuts moves by two thirds and gives up most of the gain: at 400
+drivers, −8.5 ± 4.9 trips/h against the 10-minute cap.
+
+**Caveats.** `none` is a pessimistic baseline, and `drift` is the realistic one. Every arm moves the same share
+of the fleet, so the comparison is about *where* drivers go. The 10% sample shrinks each zone to a few drivers,
+so integer rounding in the plan matters more than it would at full scale. Offline only: the live matcher
+doesn't track repositioning drivers.
+
+**Framing:** "Coordinated repositioning of idle drivers gives +4% trips/h and halves cancellations when the fleet
+has slack, for +1.3–1.9 pp of empty driving. Uncoordinated drifting to known hot spots does slightly worse than
+staying put. It does nothing when the fleet is already fully busy."
