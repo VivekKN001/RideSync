@@ -274,6 +274,19 @@ class _NoZones:
         return 0
 
 
+def test_eta_range_brackets_the_point_eta():
+    base = StraightLineModel()
+    a, b = np.array([[40.75, -73.99]]), np.array([[40.76, -73.98], [40.70, -74.00]])
+    bundle = {"model": _Const(0.0), "zones": [1],
+              "interval_models": {0.1: _Const(math.log(0.8)), 0.9: _Const(math.log(1.3))}}
+    m = CorrectedModel(base, bundle, _NoZones(), None)
+    lo, hi = m.eta_range(a, b)
+    assert np.allclose(lo, 0.8 * base.matrix(a, b)) and np.allclose(hi, 1.3 * base.matrix(a, b))
+    assert np.all(lo <= m.matrix(a, b)) and np.all(m.matrix(a, b) <= hi)
+    with pytest.raises(ValueError, match="no range models"):
+        CorrectedModel(base, {"model": _Const(0.0), "zones": [1]}, _NoZones(), None).eta_range(a, b)
+
+
 def test_corrected_model_scales_matrix_and_route():
     base = StraightLineModel()
     a, b = np.array([[40.75, -73.99]]), np.array([[40.76, -73.98], [40.70, -74.00]])

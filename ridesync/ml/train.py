@@ -94,7 +94,14 @@ def train_eta(base: str, month: str, per_day: int, osrm_url: str, max_iter: int)
              f"(robust, from the IQR: {extra['residual_iqr_sigma']:.3f}).", ""]
     lines += _table(rows, ["method", "mae_s", "mape", "median_ape", "p90_ape", "bias_s"],
                     {"mae_s": "{:.0f}", "mape": "{:.1%}", "median_ape": "{:.1%}", "p90_ape": "{:.1%}", "bias_s": "{:+.0f}"})
+    lo, hi = extra["interval"]
+    lines += ["", "## ETA range", "",
+              f"Quantile-loss trees for the {lo:.0%} and {hi:.0%} points of the same correction give a range to quote "
+              f"(\"8-11 min\"). On the test days {extra['interval_coverage']:.1%} of trips land inside it (target "
+              f"{hi - lo:.0%}; {extra['interval_below']:.1%} faster, {extra['interval_above']:.1%} slower). Median width "
+              f"{extra['interval_median_width_s'] / 60:.1f} min, {extra['interval_median_width_frac']:.0%} of the point ETA."]
     _write(f"m6_eta_{base}_report.md", lines)
+    print("\n".join(lines[-3:]))
     print(f"eta ({base}): saved {path} in {time.time() - t0:.0f}s")
 
 

@@ -269,6 +269,12 @@ MAPE when its median includes the trip's own time, and 28.6% with a leave-one-ou
 and placing a trip at random points in its zones already moves the base time by ~14%. Doing better needs
 exact coordinates, which public TLC data doesn't have. More features or tuning won't get there.
 
+**So quote a range, not a point.** Two quantile-loss models on the same features give each trip a 10th–90th
+percentile range, like the "8–11 min" a rider app shows (`CorrectedModel.eta_range`). On the test days 78% of
+trips land inside it (target 80%), with 11% faster and 11% slower, so the range is well calibrated and
+symmetric. It is wide, though: a median 9.2 minutes, 70% of the point ETA, for pickup-to-dropoff trips of about
+15 minutes. That's the honest size of the uncertainty with zone-level data.
+
 **In the simulator** (`m6_eta_sim.py`, straight base, 400 drivers, 6 seeds, paired): the world drives on the
 corrected model plus noise, and the matcher believes either the global base or the learned model.
 

@@ -140,6 +140,7 @@ class CorrectedModel:
 
     def __init__(self, base: TravelTimeModel, bundle: dict, zones, start: Optional[datetime] = None):
         self.base = base
+        self.bundle = bundle
         self.model = bundle["model"]
         self.zone_col = {int(z): i for i, z in enumerate(bundle["zones"])}
         self.zones = zones  # ridesync.stream.zones.ZoneIndex
@@ -170,8 +171,9 @@ class CorrectedModel:
             out[i] = v
         return out
 
-    def factor(self, base_s: np.ndarray, origins: np.ndarray, dests: np.ndarray) -> np.ndarray:
-        """Correction factors for base times (N, M) between origins (N, 2) and dests (M, 2)."""
+    def factor(self, base_s: np.ndarray, origins: np.ndarray, dests: np.ndarray, model=None) -> np.ndarray:
+        """Correction factors for base times (N, M) between origins (N, 2) and dests (M, 2).
+        ``model``: another regressor on the same features (a range quantile); default the point model."""
         n, m = base_s.shape
         ok = np.isfinite(base_s)
         f = np.ones_like(base_s)
@@ -186,8 +188,19 @@ class CorrectedModel:
             since = np.nan if self.start is None else (self.start - self.traffic.t0).total_seconds() + self.t
             traffic = self.traffic.lookup(since, zo[oi], zd[dj])
         X = eta_features(base_s[ok], dist[ok], zo[oi], zd[dj], hour, dow, traffic)
-        f[ok] = np.clip(np.exp(self.model.predict(X)), *FACTOR_CLIP)
+        f[ok] = np.clip(np.exp((model or self.model).predict(X)), *FACTOR_CLIP)
         return f
+
+    def eta_range(self, origins: np.ndarray, dests: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """(low, high) drive times, (N, M): the bundle's 10th and 90th percentile (``INTERVAL``).
+        Only for bundles trained with ranges; a quote like "8-11 min" shows these two numbers."""
+        qm = self.bundle.get("interval_models")
+        if not qm:
+            raise ValueError("this ETA bundle has no range models: retrain with `python -m ridesync.ml.train eta`")
+        origins, dests = np.atleast_2d(origins), np.atleast_2d(dests)
+        base = self.base.matrix(origins, dests)
+        lo, hi = (base * self.factor(base, origins, dests, qm[q]) for q in sorted(qm))
+        return np.minimum(lo, hi), np.maximum(lo, hi)
 
     def matrix(self, origins: np.ndarray, dests: np.ndarray) -> np.ndarray:
         origins, dests = np.atleast_2d(origins), np.atleast_2d(dests)
@@ -339,13 +352,17 @@ def _errors(obs: np.ndarray, pred: np.ndarray) -> dict:
             "bias_s": float(np.mean(pred - obs))}
 
 
-def _fit(X: np.ndarray, y: np.ndarray, max_iter: int):
+def _fit(X: np.ndarray, y: np.ndarray, max_iter: int, quantile: Optional[float] = None):
     from sklearn.ensemble import HistGradientBoostingRegressor
 
+    loss = {"loss": "squared_error"} if quantile is None else {"loss": "quantile", "quantile": quantile}
     return HistGradientBoostingRegressor(
-        loss="squared_error", learning_rate=0.05, max_iter=max_iter, max_leaf_nodes=63, min_samples_leaf=100,
+        **loss, learning_rate=0.05, max_iter=max_iter, max_leaf_nodes=63, min_samples_leaf=100,
         l2_regularization=1.0, categorical_features=CATEGORICAL, early_stopping=False, random_state=0,
     ).fit(X, y)
+
+
+INTERVAL = (0.1, 0.9)  # the quoted range "8-11 min": 80% of drives should land inside it
 
 
 def fit_and_evaluate(s: TripSample, max_iter: int = 300) -> Tuple[object, List[dict], dict]:
@@ -381,12 +398,22 @@ def fit_and_evaluate(s: TripSample, max_iter: int = 300) -> Tuple[object, List[d
     else:
         rows.append({"method": "base x learned correction (GBT)", **_errors(obs, pred_model)})
     resid = np.log(obs / pred_model)
+    # An ETA range: the 10th and 90th percentile of the correction, from quantile-loss trees.
+    qmodels = {q: _fit(s.X(tr), y[tr], max_iter, quantile=q) for q in INTERVAL}
+    lo, hi = (base * np.exp(qmodels[q].predict(s.X(te))) for q in INTERVAL)
+    lo, hi = np.minimum(lo, hi), np.maximum(lo, hi)
     extra = {
         "train_trips": int(tr.sum()), "test_trips": int(te.sum()), "global_factor": g,
         # Two random placements of the same trip disagree by this much before any model is involved.
         "placement_median_ape": float(np.median(np.abs(s.base2_s[te] - base) / base)),
         "residual_sigma": float(np.std(resid)),
         "residual_iqr_sigma": float((np.percentile(resid, 75) - np.percentile(resid, 25)) / 1.349),
+        "interval": list(INTERVAL),
+        "interval_coverage": float(np.mean((obs >= lo) & (obs <= hi))),
+        "interval_below": float(np.mean(obs < lo)), "interval_above": float(np.mean(obs > hi)),
+        "interval_median_width_frac": float(np.median((hi - lo) / pred_model)),
+        "interval_median_width_s": float(np.median(hi - lo)),
+        "interval_models": qmodels,
     }
     return model, rows, extra
 

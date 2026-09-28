@@ -11,3 +11,7 @@ Residual log-error sigma of the corrected model: 0.307 (robust, from the IQR: 0.
 | base x pickup-zone x hour table | 282 | 34.2% | 26.0% | 68.8% | +0 |
 | base x learned correction (GBT), no live traffic | 203 | 24.6% | 18.1% | 50.5% | -34 |
 | base x learned correction (GBT) + live traffic | 198 | 24.0% | 17.7% | 49.3% | -40 |
+
+## ETA range
+
+Quantile-loss trees for the 10% and 90% points of the same correction give a range to quote ("8-11 min"). On the test days 77.8% of trips land inside it (target 80%; 11.2% faster, 11.0% slower). Median width 9.2 min, 70% of the point ETA.
