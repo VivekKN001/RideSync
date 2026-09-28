@@ -150,3 +150,96 @@ Delays are quantised to the simulator's 1 s tick. Even zero allowance loses only
 tail of a 20% slice arrives after the next tick. A 1 s allowance cuts the loss 10×, at a cost of 1 s. Going past
 that buys almost nothing until 5 s. The job defaults to 2 s (`--lateness-ms`) as a margin for real networks that
 are worse than this model. Nothing is silently dropped either way: the rest lands on `late-events`.
+
+---
+
+# M6: demand forecast, surge pricing, ETA correction
+
+Models are trained on TLC March 2024 (Manhattan): days 1–21 for training, days 22–31 for testing. Reports:
+`results/m6_demand_report.md`, `m6_fare_report.md`, `m6_eta_straight_report.md`, `m6_surge_report.md`,
+`m6_eta_sim_straight_report.md`.
+
+## Demand forecast (6a)
+
+Requests per taxi zone per 15 minutes at full scale (66 zones, 5.36 M requests), predicted by a Poisson GBT
+(scikit-learn HistGradientBoosting). WAPE on the test days (lower is better):
+
+| horizon | GBT | last value | same time last week | zone × weekday × time mean |
+|---|---|---|---|---|
+| 15 min | **16.9%** | 21.4% | 27.0% | 22.4% |
+| 30 min | **17.7%** | 23.6% | 27.0% | 22.4% |
+| 60 min | **18.8%** | 28.2% | 27.0% | 22.4% |
+
+The model beats the best baseline by 4.5–5.5 pp, and the gap grows with the horizon: "last value" decays fast
+while the GBT loses only 1.9 pp from 15 to 60 minutes.
+
+## Fares
+
+Median regression of the TLC base fare on weekday 10:00–15:59 trips: **$4.10 + $1.98/mile + $0.68/minute**,
+minimum $8.21 (median absolute error $4.87). These fares drive the revenue columns below.
+
+## Surge pricing (6b): with a fixed fleet, surge rations demand
+
+Same 3 h slice, optimal @30 s, cancellation-aware. Every 5 minutes, surge sets a multiplier per zone from
+pressure = demand / free supply. Riders accept a price with probability m^−ε. Half of those who decline leave;
+the other half retry once. 6 seeds, paired against no surge. Rows are forecast-driven surge vs no surge
+(reactive is the same within noise):
+
+| drivers | ε | Δ cancel pp | Δ wait_all s | Δ served pp | Δ trips/h | Δ revenue/h | surged trips |
+|---|---|---|---|---|---|---|---|
+| 300 | 0.3 | −7.9 ± 0.4 | −29 ± 5 | −2.7 ± 0.4 | −30 ± 4 | +109% | 91% |
+| 300 | 0.8 | −16.4 ± 0.7 | −115 ± 6 | −9.5 ± 0.4 | −107 ± 4 | +64% | 79% |
+| 400 | 0.5 | −3.3 ± 0.4 | −53 ± 4 | −10.0 ± 0.5 | −113 ± 5 | +51% | 65% |
+| 500 | 0.5 | −1.7 ± 0.4 | −35 ± 2 | −8.7 ± 0.4 | −97 ± 5 | +37% | 51% |
+
+**Surge reduces trips in every cell.** Cancellations and waits fall because price turns riders away before
+they are matched. Fewer riders complete trips, not more (−3% to −15% trips/h). This is expected: the fleet is
+fixed, so higher prices cannot attract more drivers. The gain in the simulator is *queue quality* (at 300
+drivers, ε 0.5: cancellations 21.8% → 9.4%, wait −67 s), and the revenue gain comes from the multiplier.
+Showing surge increasing throughput would need a driver-supply response, which this simulator does not model.
+
+**The forecast barely beats reacting to current demand.** Forecast − reactive stays within about ±0.5 pp and
+±5 trips/h everywhere. Revenue is up to +$700/h at 300 drivers, where the forecast arm surges slightly more often.
+Reprices happen every 5 minutes, so reactive pressure is at most about 5 minutes stale. A 16.9% vs 21.4% WAPE
+difference changes very few 0.25-step multiplier decisions.
+
+**The policy surges too often.** Even at 500 drivers, where no-surge cancellations are only 3.5%, half of all
+trips are surged. Pressure compares 15 minutes of demand with drivers free *right now*, and drivers turn over
+several times in 15 minutes, so pressure sits above the threshold of 1 in normal conditions. The threshold
+should be tuned before surge is presented as a product result. The mechanism and the comparison stand as they are.
+
+## ETA correction (6c)
+
+Offline accuracy on 200 k test trips (pickup-to-dropoff time):
+
+| method | MAE s | MAPE | p90 APE | bias s |
+|---|---|---|---|---|
+| straight-line base (global calibration) | 462 | 51.5% | 114.7% | +206 |
+| base × global median factor | 411 | 45.3% | 93.4% | +92 |
+| base × pickup zone × hour table | 355 | 39.6% | 80.0% | +69 |
+| **base × learned correction (GBT)** | **205** | **24.7%** | **51.1%** | −29 |
+
+The learned correction halves the error of the calibrated base, and it clearly beats a lookup table. Part of
+the remaining error is noise the model can't remove: placing the same trip at random points in its zones
+already moves the base time by a median 13.9%.
+
+**In the simulator** (`m6_eta_sim.py`, 400 drivers, 6 seeds, paired): the world drives on the corrected model
+plus noise, and the matcher believes either the global base or the learned model.
+
+| matcher belief | \|ETA error\| s | mean error s | late > 2 min | cancel % | wait_all s | trips/h |
+|---|---|---|---|---|---|---|
+| global multiplier | 271 | +266 | 79.1% | 13.3 | 525 | 974 |
+| learned ETA | 76 (−195 ± 3) | +12 | 13.0% | 21.2 (+7.9 ± 0.6) | 334 (−191 ± 6) | 885 (−89 ± 7) |
+
+Honest quotes cut the ETA error by 72%: the share of pickups more than 2 minutes late drops from 79% to 13%,
+and the average rider waits 191 s less. The cancellation and trips/h columns look worse, but they show the
+known simulator artifact: riders cancel on a long *quote* and never while the driver is on the way. The global
+matcher quotes 4.4 minutes too optimistically, so riders accept and then wait 525 s on average. The learned
+matcher quotes truthfully, and some riders decline up front. In reality many of the misled riders would cancel
+mid-pickup. The fair reading is quote accuracy and wait, and there the learned ETA clearly wins. Getting
+throughput right would need riders who can cancel while the driver is en route (possible later work).
+
+**Framing:** "A GBT demand forecast beats the best baseline by ~5 pp WAPE. A learned ETA correction halves
+travel-time error, and in simulation it cuts late pickups from 79% to 13%. Surge with a fixed fleet trades
+throughput for shorter queues and fewer cancellations. Its real benefit depends on a driver-supply response,
+which is out of scope."
