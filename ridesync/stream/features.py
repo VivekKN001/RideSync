@@ -6,6 +6,9 @@ job (``ridesync.stream.job``) only supplies keyed state, timers and Kafka.
 Stage 1, keyed by rider or driver (``enrich``): attach a taxi zone to every
 event and turn it into *zone events*.
 - A rider's events all count in the zone they requested from (demand side).
+- With surge pricing (M6), a ``quoted`` event (the rider opened the app and saw a price) counts as
+  one app open (``quotes``, first attempt only) and, if they didn't request, one ``declines``. It
+  needs no rider state: the quote carries its own origin.
 - A driver status turns into supply changes: +1 free driver in a zone when the
   driver becomes idle there, -1 when it leaves idle.
 - Out of order: a driver status older than the last one applied is ignored
@@ -27,9 +30,9 @@ from .zones import ZoneIndex
 
 WINDOW_S = 60.0
 QUIET_WINDOWS = 3  # keep emitting rows for a zone this many minutes after its last event
-RIDER_TYPES = frozenset({"requested", "matched", "picked_up", "dropped_off", "cancelled"})
+RIDER_TYPES = frozenset({"quoted", "requested", "matched", "picked_up", "dropped_off", "cancelled"})
 COUNTERS = ("requests", "matches", "cancels_no_match", "cancels_eta", "pickups", "dropoffs",
-            "match_wait_sum", "eta_sum", "pickup_wait_sum", "idle_delta")
+            "match_wait_sum", "eta_sum", "pickup_wait_sum", "idle_delta", "quotes", "declines")
 
 
 def entity_key(msg: dict) -> Optional[str]:
@@ -75,6 +78,10 @@ def _enrich_driver(state: Optional[dict], msg: dict, zones: ZoneIndex) -> Tuple[
 
 def _enrich_rider(state: Optional[dict], msg: dict, zones: ZoneIndex) -> Tuple[Optional[dict], List[dict]]:
     typ = msg["type"]
+    if typ == "quoted":
+        zone = zones.zone_of(msg["origin"][0], msg["origin"][1])
+        return state, [{**_base(msg, zone), "kind": "quote", "first": msg["attempt"] == 0,
+                        "accepted": msg["accepted"]}]
     if typ == "requested":
         zone = zones.zone_of(msg["origin"][0], msg["origin"][1])
         pending = state.get("pending", []) if state else []
@@ -149,6 +156,9 @@ def add_event(st: dict, ev: dict) -> bool:
         w["dropoffs"] += 1
     elif kind == "idle":
         w["idle_delta"] += ev["delta"]
+    elif kind == "quote":
+        w["quotes"] += ev["first"]
+        w["declines"] += not ev["accepted"]
     st["last_active"] = max(st["last_active"], m)
     return False
 

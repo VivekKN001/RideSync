@@ -9,13 +9,14 @@ consumer can skip high-volume types (location pings) without decoding them.
 
 Topic               key        types
 ------------------  ---------  ----------------------------------------------------------
-rider-events        rider id   requested, matched, picked_up, dropped_off, cancelled
+rider-events        rider id   quoted (surge pricing only), requested, matched, picked_up, dropped_off, cancelled
 driver-events       driver id  status, ping
 dispatch-offers     driver id  offer
 offer-responses     rider id   offer_response
 dispatch-batches    run id     batch
 zone-features       run|zone   zone_minute (Flink: per taxi zone, per simulated minute)
 late-events         run|zone   the late event, as received
+zone-prices         run id     prices (surge multiplier per zone, from the simulator or ridesync.live.pricing)
 
 ``rider-events`` and ``driver-events`` also carry control messages written to
 *every* partition: ``run_start`` (with the run's dispatch config), ``tick``
@@ -42,8 +43,9 @@ OFFER_RESPONSES = "offer-responses"
 DISPATCH_BATCHES = "dispatch-batches"
 ZONE_FEATURES = "zone-features"   # written by the Flink job (ridesync.stream)
 LATE_EVENTS = "late-events"       # world events that arrived after their window closed
+ZONE_PRICES = "zone-prices"       # M6 surge prices
 ALL_TOPICS = (RIDER_EVENTS, DRIVER_EVENTS, DISPATCH_OFFERS, OFFER_RESPONSES, DISPATCH_BATCHES, ZONE_FEATURES,
-              LATE_EVENTS)
+              LATE_EVENTS, ZONE_PRICES)
 WORLD_TOPICS = (RIDER_EVENTS, DRIVER_EVENTS)  # carry run_start / tick / run_end on every partition
 
 CONTROL_TYPES = frozenset({"run_start", "tick", "run_end"})
@@ -71,6 +73,9 @@ class RiderEvent(_Base, total=False):
     driver: int               # matched, picked_up, dropped_off
     quoted_eta_s: float       # matched
     reason: str               # cancelled: "no_match" | "eta_quote"
+    multiplier: float         # quoted: surge multiplier shown when the rider opened the app
+    accepted: bool            # quoted: the rider requested at that price
+    attempt: int              # quoted: 0 = first app open, 1 = the retry
 
 
 class DriverStatus(_Base):
@@ -119,6 +124,13 @@ class BatchRecord(_Base):
     # (ts, from _Base: wall clock when the batch was solved)
 
 
+class Prices(_Base):
+    prices: dict              # {zone id (str): multiplier}
+    demand: dict              # {zone id (str): expected app opens over the pricing horizon}
+    supply: dict              # {zone id (str): free drivers}
+    source: str               # "simulator" or "service:<reactive|forecast>"
+
+
 def encode(msg: dict) -> bytes:
     return json.dumps(msg, separators=(",", ":")).encode()
 
@@ -128,8 +140,11 @@ def decode(raw: bytes) -> dict:
 
 
 # ------------------------------------------------------------------ config
-def run_config(dispatch: DispatchConfig, travel: TravelConfig, offer_timeout_s: float) -> dict:
-    return {"dispatch": asdict(dispatch), "travel": asdict(travel), "offer_timeout_s": offer_timeout_s}
+def run_config(dispatch: DispatchConfig, travel: TravelConfig, offer_timeout_s: float,
+               extra: Optional[dict] = None) -> dict:
+    """``travel`` is what the matcher should assume (the belief model). ``extra`` carries M6 context:
+    the run's wall-clock start, sample fraction and pricing config (the pricing service reads them)."""
+    return {"dispatch": asdict(dispatch), "travel": asdict(travel), "offer_timeout_s": offer_timeout_s, **(extra or {})}
 
 
 def dispatch_from_dict(d: dict) -> DispatchConfig:

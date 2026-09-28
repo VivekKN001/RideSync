@@ -6,7 +6,13 @@ and calls the same matching strategies the live matcher service will use.
 Lifecycle
 ---------
 Rider:  WAITING -> MATCHED -> ON_TRIP -> DONE, or WAITING -> CANCELLED
+        With surge pricing (M6) a rider first sees a price and may not request: PENDING -> PRICED_OUT,
+        or PENDING again (one retry a few minutes later).
 Driver: IDLE -> EN_ROUTE -> ON_TRIP -> IDLE (an ON_TRIP driver may hold a queued next rider)
+
+Two travel models (M6): ``travel`` is how long drives really take (the world), and ``belief`` is
+what the matcher assumes when it builds ETA matrices and quotes. They are the same object unless
+the config sets ``belief``.
 
 Commitment policy: a match is never revisited once it's made. Drivers who
 finish their current trip within ``chain_horizon_s`` count as supply. Their
@@ -19,7 +25,8 @@ simulator (``ridesync.live.world``) overrides them to emit events.
 from __future__ import annotations
 
 import heapq
-from dataclasses import dataclass, field
+from collections import Counter
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Dict, Optional, Set
 
@@ -27,7 +34,9 @@ import numpy as np
 
 from ..dispatch import DispatchStats, DriverState, build_batch, solve_batch
 from ..geo import Route, TravelTimeModel
+from ..data.slices import run_start_and_frac
 from ..matching import get_strategy
+from ..pricing import DemandEstimator, conversion, zone_prices
 from ..routing import make_travel_model
 from .config import SimConfig
 from .demand import RiderSpec, generate_riders, initial_driver_positions
@@ -40,6 +49,7 @@ class RiderState(Enum):
     ON_TRIP = "on_trip"
     DONE = "done"
     CANCELLED = "cancelled"
+    PRICED_OUT = "priced_out"  # saw a surge price and left without requesting
 
 
 @dataclass
@@ -53,6 +63,15 @@ class Rider:
     driver_id: Optional[int] = None
     cancel_reason: Optional[str] = None
     cancel_t: Optional[float] = None
+    # Surge pricing (M6). spec.request_t moves to the retry time when a rider tries again; open_t doesn't.
+    open_t: float = -1.0
+    attempt: int = 0
+    price: float = 1.0
+    zone: Optional[int] = None
+
+    def __post_init__(self):
+        if self.open_t < 0:
+            self.open_t = self.spec.request_t
 
 
 @dataclass
@@ -98,14 +117,18 @@ class Driver:
         return self.next_rider_id is not None
 
 
-# Event kinds, ordered so that at equal timestamps world events run before dispatch.
+# Event kinds, ordered so that at equal timestamps world events run before dispatch,
+# and new prices apply before the requests at the same instant.
 REQUEST, PATIENCE, ARRIVE, TRIP_DONE, DISPATCH = range(5)
+PRICE = -1
 
 
 class Simulation:
     def __init__(self, cfg: SimConfig, travel: Optional[TravelTimeModel] = None):
         self.cfg = cfg
-        self.travel = travel or make_travel_model(cfg.travel)
+        self.start, self.sample_frac = run_start_and_frac(cfg.demand)
+        self.travel = travel or make_travel_model(cfg.travel, self.start, cfg.seed)
+        self.belief = self.travel if cfg.belief is None else make_travel_model(cfg.belief, self.start, cfg.seed)
         self.strategy = get_strategy(cfg.dispatch.strategy)
         shadow = cfg.dispatch.shadow_strategy
         self.shadow = get_strategy(shadow) if shadow else None
@@ -121,6 +144,19 @@ class Simulation:
         self._events: list = []
         self._seq = 0
         self._dispatch_queued = False
+        self.prices: Dict[int, float] = {}  # zone -> current multiplier; missing = 1
+        self.price_log: list = []           # (t, prices, demand estimate, supply) per price update
+        self.pricing_on = cfg.pricing.enabled
+        if self.pricing_on:
+            from ..stream.zones import ZoneIndex
+
+            fc = None
+            if cfg.pricing.demand == "forecast":
+                from ..ml.demand import load_or_none
+
+                fc = load_or_none(cfg.pricing.forecast_path)
+            self.zones = ZoneIndex.load(cfg.pricing.zones_path)
+            self.estimator = DemandEstimator(cfg.pricing, self.start, self.sample_frac, fc)
 
     # ----------------------------------------------------------------- events
     def _schedule(self, t: float, kind: int, *args) -> None:
@@ -140,6 +176,7 @@ class Simulation:
             self._schedule(r.spec.request_t, REQUEST, r.spec.id)
         if not self._event_driven():
             self._schedule(self.cfg.dispatch.interval_s, DISPATCH)
+        self._schedule_pricing()
 
         handlers = self._handlers()
         while self._events:
@@ -162,6 +199,12 @@ class Simulation:
     def _publish_driver(self, d: Driver) -> None:
         """A driver's state, leg or queued next rider changed."""
 
+    def _publish_quote(self, r: Rider, m: float, accepted: bool) -> None:
+        """A rider opening the app saw multiplier m and did or didn't request (surge pricing only)."""
+
+    def _publish_prices(self, prices: Dict[int, float], demand: Dict[int, float], supply: Dict[int, float]) -> None:
+        """New zone prices (surge pricing only)."""
+
     # -------------------------------------------------------------- handlers
     def _handlers(self) -> dict:
         return {
@@ -170,10 +213,13 @@ class Simulation:
             ARRIVE: self._on_arrive,
             TRIP_DONE: self._on_trip_done,
             DISPATCH: self._on_dispatch,
+            PRICE: self._on_price,
         }
 
     def _on_request(self, rid: int) -> None:
         r = self.riders[rid]
+        if self.pricing_on and not self._quote(r):
+            return
         r.state = RiderState.WAITING
         self.waiting[rid] = r
         self._publish_rider(r, "requested")
@@ -188,7 +234,7 @@ class Simulation:
     def _on_arrive(self, did: int, rid: int) -> None:
         d, r = self.drivers[did], self.riders[rid]
         r.state, r.pickup_t = RiderState.ON_TRIP, self.now
-        d.leg = Leg(self.travel.route(d.leg.end, r.spec.dest), self.now)
+        d.leg = Leg(self._route(d.leg.end, r.spec.dest), self.now)
         self._set_state(d, DriverState.ON_TRIP)
         self._publish_rider(r, "picked_up")
         self._publish_driver(d)
@@ -228,7 +274,7 @@ class Simulation:
             [r.spec.request_t for r in riders],
             self.drivers,
             self.declined,
-            self.travel,
+            self.belief,
             self.cfg.dispatch,
         )
         if batch is None:
@@ -265,9 +311,66 @@ class Simulation:
             self._publish_driver(d)
         return "accepted"
 
+    # ---------------------------------------------------------------- pricing
+    def _schedule_pricing(self) -> None:
+        if self.pricing_on:
+            self._schedule(0.0, PRICE)
+
+    def _zone_of(self, p: np.ndarray) -> int:
+        return self.zones.zone_of(float(p[0]), float(p[1]))
+
+    def _on_price(self) -> None:
+        pc = self.cfg.pricing
+        horizon = self.cfg.dispatch.chain_horizon_s
+        supply: Counter = Counter()
+        for d in self.drivers:
+            if d.state is DriverState.IDLE or (
+                    horizon > 0 and d.state is DriverState.ON_TRIP and not d.has_next and d.free_at - self.now <= horizon):
+                supply[self._zone_of(d.pos)] += 1
+        waiting = Counter(r.zone for r in self.waiting.values())
+        zones = (set(supply) | set(waiting) | set(self.estimator.recent)) - {0}  # 0 = outside every zone
+        if self.estimator.fc is not None:
+            zones |= set(self.estimator.fc.zones)
+        zones = sorted(zones)
+        demand = self.estimator.estimate(zones, self.now)
+        self.prices = zone_prices(zones, demand, waiting, supply, pc)
+        self.price_log.append((self.now, self.prices, demand, dict(supply)))
+        self._publish_prices(self.prices, demand, {z: float(supply.get(z, 0)) for z in zones})
+        if self.now + pc.interval_s < self.cfg.demand.duration_s:
+            self._schedule(self.now + pc.interval_s, PRICE)
+
+    def _quote(self, r: Rider) -> bool:
+        """Show the rider the zone's price. Returns True if they request now."""
+        pc = self.cfg.pricing
+        if r.attempt == 0:
+            r.zone = self._zone_of(r.spec.origin)
+            self.estimator.add_open(r.zone, self.now)
+        m = self.prices.get(r.zone, 1.0)
+        r.price = m
+        # Draws are seeded per rider and attempt, so every pricing arm faces the same riders.
+        u = 0.0 if m <= 1.0 else np.random.default_rng([self.cfg.seed, 4, r.spec.id, r.attempt]).random()
+        accepted = u < conversion(m, pc.elasticity)
+        self._publish_quote(r, m, accepted)
+        if accepted:
+            return True
+        leaves = np.random.default_rng([self.cfg.seed, 5, r.spec.id]).random() < pc.leave_prob
+        if r.attempt == 0 and pc.retry and not leaves:
+            z = np.random.default_rng([self.cfg.seed, 6, r.spec.id]).standard_normal()
+            r.attempt = 1
+            r.spec = replace(r.spec, request_t=self.now + pc.retry_median_s * float(np.exp(pc.retry_sigma * z)))
+            self._schedule(r.spec.request_t, REQUEST, r.spec.id)
+        else:
+            r.state, r.cancel_t = RiderState.PRICED_OUT, self.now
+        return False
+
     # ------------------------------------------------------------ transitions
+    def _route(self, a: np.ndarray, b: np.ndarray) -> Route:
+        if hasattr(self.travel, "set_time"):
+            self.travel.set_time(self.now)
+        return self.travel.route(a, b)
+
     def _start_pickup(self, d: Driver, r: Rider) -> None:
-        d.leg = Leg(self.travel.route(d.leg.position(self.now), r.spec.origin), self.now)
+        d.leg = Leg(self._route(d.leg.position(self.now), r.spec.origin), self.now)
         d.rider_id = r.spec.id
         self._set_state(d, DriverState.EN_ROUTE)
         self._publish_driver(d)

@@ -28,6 +28,7 @@ import math
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Dict, Optional, Set
 
 import numpy as np
@@ -93,9 +94,10 @@ class Matcher:
         if self._travel_override is not None:
             self.travel = self._travel_override
         else:
-            key = json.dumps(cfg["travel"], sort_keys=True)
+            key = json.dumps([cfg["travel"], cfg.get("start")], sort_keys=True)
             if key not in self._travel_cache:
-                self._travel_cache[key] = make_travel_model(travel_from_dict(cfg["travel"]))
+                start = datetime.fromisoformat(cfg["start"]) if cfg.get("start") else None
+                self._travel_cache[key] = make_travel_model(travel_from_dict(cfg["travel"]), start)
             self.travel = self._travel_cache[key]
 
         self.drivers: Dict[int, DriverRecord] = {}

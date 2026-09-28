@@ -2,6 +2,8 @@
 
     python -m ridesync.live.sim --speed 10                         # real Manhattan demand, 3 h, at 10x
     python -m ridesync.live.sim --speed 30 --travel osrm --compare-offline
+    python -m ridesync.live.sim --speed 20 --surge reactive                  # M6: the simulator prices zones
+    python -m ridesync.live.sim --speed 20 --surge forecast --price-service  # M6: ridesync.live.pricing does
 
 Defaults are the best M2 arm: optimal matching every 30 s with the cancellation-aware cost,
 500 drivers, on the TLC slice. At the end it prints the metrics, the live diagnostics
@@ -30,6 +32,7 @@ REPORT = [
     "requests", "completed", "cancel_rate", "wait_all_mean_s", "wait_mean_s", "pickup_mean_s",
     "time_to_match_mean_s", "completed_per_hour", "driver_idle_frac", "batches", "batch_riders_mean",
     "solve_ms_mean", "decline_rate",
+    "app_opens", "priced_out_rate", "served_rate", "mean_multiplier_paid", "revenue_per_hour", "eta_abs_error_mean_s",
 ]
 
 
@@ -44,6 +47,9 @@ def add_args(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--hours", type=float, default=3.0)
     ap.add_argument("--warmup-min", type=float, default=30.0)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--surge", choices=["off", "reactive", "forecast"], default="off", help="M6 surge pricing")
+    ap.add_argument("--elasticity", type=float, default=None, help="rider price elasticity (default: PricingConfig)")
+    ap.add_argument("--eta-model", default=None, help="M6 ETA correction on the travel model (data/models/eta_<travel>.joblib)")
 
 
 def config_from_args(args) -> SimConfig:
@@ -61,7 +67,22 @@ def config_from_args(args) -> SimConfig:
         o["dispatch.cost"] = AWARE
     if args.slice != "synthetic":
         o["demand.trips_path"] = args.slice
-    return SimConfig().with_(**o)
+    if args.surge != "off":
+        o["pricing.enabled"] = True
+        o["pricing.demand"] = args.surge
+        if args.elasticity is not None:
+            o["pricing.elasticity"] = args.elasticity
+    cfg = SimConfig().with_(**o)
+    if args.eta_model:
+        from dataclasses import replace
+
+        cfg = cfg.with_(travel=replace(cfg.travel, eta_model=args.eta_model))  # world and matcher both
+    fare = Path("data/models/fare.json")
+    if fare.exists():
+        from ..ml.fare import fare_from_file
+
+        cfg = cfg.with_(fare=fare_from_file(str(fare)))
+    return cfg
 
 
 def diagnostics(sim: LiveSimulation, wall_s: float) -> Dict[str, float]:
@@ -107,13 +128,16 @@ def main(argv=None) -> None:
     ap.add_argument("--bootstrap", default="localhost:9092")
     ap.add_argument("--prefix", default="", help="topic name prefix; must match the matcher's")
     ap.add_argument("--compare-offline", action="store_true")
+    ap.add_argument("--price-service", action="store_true",
+                    help="with --surge: take prices from ridesync.live.pricing (needs Flink) instead of pricing locally")
     ap.add_argument("--json", type=Path, help="write metrics and diagnostics here")
     args = ap.parse_args(argv)
     if args.speed <= 0:
         ap.error("--speed must be > 0 (lockstep mode is ridesync.live.lockstep)")
 
     cfg = config_from_args(args)
-    live = LiveConfig(speed=args.speed, tick_s=args.tick, ping_s=args.ping)
+    live = LiveConfig(speed=args.speed, tick_s=args.tick, ping_s=args.ping,
+                      price_source="service" if args.price_service else "local")
     hours = cfg.demand.duration_s / 3600
     print(f"live run: {hours:g} h of demand at {args.speed:g}x -> about {hours * 60 / args.speed:.0f} min wall "
           f"(plus the tail until the last trip ends)", flush=True)

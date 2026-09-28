@@ -107,6 +107,29 @@ stat("Late events (Flink)", f"SELECT count() AS late FROM late_events WHERE {RUN
      desc="Events that arrived after their minute had already closed; reported, not counted.")
 stat("Batches skipped by the matcher", f"SELECT max(skipped) AS skipped FROM dispatch_batches WHERE {RUN}", w=6)
 
+# ------------------------------------------------------------ surge (M6)
+series("Surge multiplier across zones (M6)",
+       f"SELECT max(ts) AS time, max(multiplier) AS Highest, "
+       f"sum(multiplier * demand) / greatest(sum(demand), 1e-9) AS `Demand-weighted mean` "
+       f"FROM zone_prices WHERE {RUN} GROUP BY t ORDER BY time",
+       desc="Empty unless the run has surge pricing (python -m ridesync.live.sim --surge reactive|forecast).")
+series("Expected vs actual app opens, next 15 min (M6)",
+       f"SELECT p.time AS time, p.expected AS Expected, a.actual AS Actual FROM "
+       f"(SELECT toInt64(t) AS pt, max(ts) AS time, sum(demand) AS expected FROM zone_prices WHERE {RUN} GROUP BY pt) AS p "
+       f"LEFT JOIN (SELECT intDiv(toInt64(t), 300) * 300 - arrayJoin([0, 300, 600]) AS pt, sum(quotes) AS actual "
+       f"FROM zone_features FINAL WHERE {RUN} GROUP BY pt) AS a ON a.pt = p.pt ORDER BY time",
+       desc="Expected: the pricing demand estimate (reactive or forecast) summed over zones, at each 5-minute price "
+            "update. Actual: app opens in the 15 minutes that followed (from Flink). Assumes the default 300 s "
+            "interval and 900 s horizon.")
+table("Surging zones at the latest price update (M6)",
+      ch(f"SELECT z.name AS Zone, p.multiplier AS Multiplier, round(p.demand, 1) AS `Expected opens`, "
+         f"p.supply AS `Free drivers`, p.source AS Source FROM zone_prices AS p LEFT JOIN zones AS z ON z.id = p.zone "
+         f"WHERE p.{RUN} AND p.t = (SELECT max(t) FROM zone_prices WHERE {RUN}) AND p.multiplier > 1 "
+         f"ORDER BY p.multiplier DESC, p.demand DESC LIMIT 15", "table"), CH, w=16)
+stat("Riders who declined the price", f"SELECT sum(declines) / greatest(sum(quotes), 1) AS declined "
+     f"FROM zone_features FINAL WHERE {RUN}", unit="percentunit", decimals=1, w=8,
+     desc="Price refusals per app open (a retry that is refused again counts twice), from Flink zone features.")
+
 # ---------------------------------------------------------------- postgres
 table("Trip ledger (Postgres), latest updates",
       {"refId": "A", "datasource": PG, "format": "table", "rawQuery": True, "editorMode": "code",
@@ -134,5 +157,5 @@ dashboard = {
 }
 out = Path(__file__).parent / "dashboards" / "ridesync.json"
 out.parent.mkdir(exist_ok=True)
-out.write_text(json.dumps(dashboard, indent=1), encoding="utf-8")
+out.write_text(json.dumps(dashboard, indent=1), encoding="utf-8", newline="\n")
 print(f"wrote {out} ({len(panels)} panels)")

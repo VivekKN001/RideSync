@@ -40,6 +40,10 @@ class DemandConfig:
     # Replay a TLC slice (from `python -m ridesync.data.tlc`) instead of synthetic demand.
     # requests_per_hour and the city hotspots are then ignored; duration_s still cuts the replay.
     trips_path: Optional[str] = None
+    # Wall-clock time of simulated t = 0 ("2024-03-13 17:00") and the slice's sample fraction. Read from the
+    # slice file name when left unset. The M6 models (time-of-day features, demand forecast) need them.
+    start: Optional[str] = None
+    sample_frac: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -71,6 +75,11 @@ class TravelConfig:
     detour: float = 1.35     # straight-line model only
     osrm_url: str = "http://localhost:5000"
     time_multiplier: float = 1.0  # OSRM only; from `python -m ridesync.routing.calibrate`
+    # M6: a learned correction on top of the model above (`python -m ridesync.ml.train eta`).
+    eta_model: Optional[str] = None
+    # M6: per-trip randomness of real driving times, as a lognormal sigma on each route's duration.
+    # ETA matrices stay noise-free (they are the expectation), so quotes are no longer exact.
+    noise_sigma: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -87,6 +96,57 @@ class DispatchConfig:
 
 
 @dataclass(frozen=True)
+class FareConfig:
+    """Rider fare before surge: max(min_fare, base + per_mile * miles + per_min * minutes).
+
+    Defaults are placeholders in the range of 2024 Manhattan fares; ``python -m ridesync.ml.train fare``
+    fits them to TLC ``base_passenger_fare`` (see ``ridesync.ml.fare.fare_from_file``). Miles are the
+    straight-line distance times ``road_factor``, minutes the time actually spent on the trip.
+    """
+
+    base: float = 3.0
+    per_mile: float = 2.0
+    per_min: float = 0.9
+    min_fare: float = 10.0
+    road_factor: float = 1.35
+
+
+@dataclass(frozen=True)
+class PricingConfig:
+    """Surge pricing (M6). Off by default, and when off the simulation is unchanged.
+
+    Every ``interval_s`` each taxi zone gets a multiplier from its pressure,
+    ``(expected demand over horizon_s + riders waiting) / max(free supply, 1)``, where supply is idle
+    drivers in the zone plus on-trip drivers finishing there within the chaining horizon. The multiplier
+    is ``1 + slope * (pressure - threshold)``, floored to ``step`` and clipped to [1, cap].
+
+    Expected demand is either ``reactive`` (app opens in the zone over the last ``horizon_s``) or
+    ``forecast`` (the M6 demand model's prediction for the next ``horizon_s``).
+
+    Riders see the price when they open the app and request with probability ``m ** -elasticity``
+    (no public data exists for this; the default is in the range Cohen et al. 2016 found for Uber). A
+    rider who says no leaves with probability ``leave_prob`` and otherwise, if ``retry``, opens the app
+    once more after a lognormal delay and sees the price at that time.
+    """
+
+    enabled: bool = False
+    demand: str = "reactive"  # "reactive" or "forecast"
+    interval_s: float = 300.0
+    horizon_s: float = 900.0
+    threshold: float = 1.0
+    slope: float = 0.5
+    cap: float = 2.5
+    step: float = 0.25
+    elasticity: float = 0.5
+    leave_prob: float = 0.5
+    retry: bool = True
+    retry_median_s: float = 180.0
+    retry_sigma: float = 0.5
+    forecast_path: str = "data/models/demand.joblib"
+    zones_path: str = "data/processed/taxi_zones.json"
+
+
+@dataclass(frozen=True)
 class SimConfig:
     seed: int = 0
     city: CityConfig = field(default_factory=CityConfig)
@@ -95,6 +155,10 @@ class SimConfig:
     drivers: DriverConfig = field(default_factory=DriverConfig)
     travel: TravelConfig = field(default_factory=TravelConfig)
     dispatch: DispatchConfig = field(default_factory=DispatchConfig)
+    # What the matcher believes travel takes, when that differs from the world's ``travel`` (M6). None = same.
+    belief: Optional[TravelConfig] = None
+    pricing: PricingConfig = field(default_factory=PricingConfig)
+    fare: FareConfig = field(default_factory=FareConfig)
 
     def with_(self, **overrides) -> "SimConfig":
         """Override nested fields with dotted keys, e.g. ``with_(**{"dispatch.interval_s": 2})``."""

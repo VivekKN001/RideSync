@@ -626,6 +626,190 @@
    }
   },
   {
+   "type": "timeseries",
+   "title": "Surge multiplier across zones (M6)",
+   "description": "Empty unless the run has surge pricing (python -m ridesync.live.sim --surge reactive|forecast).",
+   "datasource": {
+    "type": "grafana-clickhouse-datasource",
+    "uid": "clickhouse"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 29,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-clickhouse-datasource",
+      "uid": "clickhouse"
+     },
+     "editorType": "sql",
+     "rawSql": "SELECT max(ts) AS time, max(multiplier) AS Highest, sum(multiplier * demand) / greatest(sum(demand), 1e-9) AS `Demand-weighted mean` FROM zone_prices WHERE run = (SELECT if('${run}' = 'latest', argMax(run, started_ms), '${run}') FROM run_markers WHERE kind = 'run_start') GROUP BY t ORDER BY time",
+     "format": 0,
+     "queryType": "timeseries"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "showPoints": "never",
+      "stacking": {
+       "mode": "none"
+      }
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   }
+  },
+  {
+   "type": "timeseries",
+   "title": "Expected vs actual app opens, next 15 min (M6)",
+   "description": "Expected: the pricing demand estimate (reactive or forecast) summed over zones, at each 5-minute price update. Actual: app opens in the 15 minutes that followed (from Flink). Assumes the default 300 s interval and 900 s horizon.",
+   "datasource": {
+    "type": "grafana-clickhouse-datasource",
+    "uid": "clickhouse"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 29,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-clickhouse-datasource",
+      "uid": "clickhouse"
+     },
+     "editorType": "sql",
+     "rawSql": "SELECT p.time AS time, p.expected AS Expected, a.actual AS Actual FROM (SELECT toInt64(t) AS pt, max(ts) AS time, sum(demand) AS expected FROM zone_prices WHERE run = (SELECT if('${run}' = 'latest', argMax(run, started_ms), '${run}') FROM run_markers WHERE kind = 'run_start') GROUP BY pt) AS p LEFT JOIN (SELECT intDiv(toInt64(t), 300) * 300 - arrayJoin([0, 300, 600]) AS pt, sum(quotes) AS actual FROM zone_features FINAL WHERE run = (SELECT if('${run}' = 'latest', argMax(run, started_ms), '${run}') FROM run_markers WHERE kind = 'run_start') GROUP BY pt) AS a ON a.pt = p.pt ORDER BY time",
+     "format": 0,
+     "queryType": "timeseries"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "showPoints": "never",
+      "stacking": {
+       "mode": "none"
+      }
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   }
+  },
+  {
+   "type": "table",
+   "title": "Surging zones at the latest price update (M6)",
+   "description": "",
+   "datasource": {
+    "type": "grafana-clickhouse-datasource",
+    "uid": "clickhouse"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 37,
+    "w": 16,
+    "h": 9
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-clickhouse-datasource",
+      "uid": "clickhouse"
+     },
+     "editorType": "sql",
+     "rawSql": "SELECT z.name AS Zone, p.multiplier AS Multiplier, round(p.demand, 1) AS `Expected opens`, p.supply AS `Free drivers`, p.source AS Source FROM zone_prices AS p LEFT JOIN zones AS z ON z.id = p.zone WHERE p.run = (SELECT if('${run}' = 'latest', argMax(run, started_ms), '${run}') FROM run_markers WHERE kind = 'run_start') AND p.t = (SELECT max(t) FROM zone_prices WHERE run = (SELECT if('${run}' = 'latest', argMax(run, started_ms), '${run}') FROM run_markers WHERE kind = 'run_start')) AND p.multiplier > 1 ORDER BY p.multiplier DESC, p.demand DESC LIMIT 15",
+     "format": 1,
+     "queryType": "table"
+    }
+   ],
+   "options": {
+    "showHeader": true,
+    "cellHeight": "sm"
+   },
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   }
+  },
+  {
+   "type": "stat",
+   "title": "Riders who declined the price",
+   "description": "Price refusals per app open (a retry that is refused again counts twice), from Flink zone features.",
+   "datasource": {
+    "type": "grafana-clickhouse-datasource",
+    "uid": "clickhouse"
+   },
+   "gridPos": {
+    "x": 16,
+    "y": 37,
+    "w": 8,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-clickhouse-datasource",
+      "uid": "clickhouse"
+     },
+     "editorType": "sql",
+     "rawSql": "SELECT sum(declines) / greatest(sum(quotes), 1) AS declined FROM zone_features FINAL WHERE run = (SELECT if('${run}' = 'latest', argMax(run, started_ms), '${run}') FROM run_markers WHERE kind = 'run_start')",
+     "format": 1,
+     "queryType": "table"
+    }
+   ],
+   "options": {
+    "colorMode": "none",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percentunit",
+     "decimals": 1
+    },
+    "overrides": []
+   }
+  },
+  {
    "type": "table",
    "title": "Trip ledger (Postgres), latest updates",
    "description": "",
@@ -635,7 +819,7 @@
    },
    "gridPos": {
     "x": 0,
-    "y": 29,
+    "y": 46,
     "w": 16,
     "h": 9
    },
@@ -671,7 +855,7 @@
    },
    "gridPos": {
     "x": 16,
-    "y": 29,
+    "y": 46,
     "w": 8,
     "h": 9
    },

@@ -21,8 +21,8 @@ import heapq
 import random
 import time
 from collections import Counter
-from dataclasses import dataclass
-from typing import Callable, List, Optional
+from dataclasses import asdict, dataclass
+from typing import Callable, Dict, List, Optional
 
 from ..geo import TravelTimeModel
 from ..sim.config import SimConfig
@@ -30,7 +30,7 @@ from ..sim.engine import DISPATCH, REQUEST, Driver, DriverState, Rider, RiderSta
 from .bus import Bus
 from .schema import (
     CONTROL_TYPES, DISPATCH_BATCHES, DISPATCH_OFFERS, DRIVER_EVENTS, OFFER_RESPONSES, RIDER_EVENTS, VERSION,
-    WORLD_TOPICS, run_config,
+    WORLD_TOPICS, ZONE_PRICES, run_config,
 )
 
 PING = DISPATCH + 1  # after dispatch at equal timestamps
@@ -47,6 +47,9 @@ class LiveConfig:
     # so they reach consumers out of order. Control messages are never delayed.
     jitter_frac: float = 0.0
     jitter_ms: float = 0.0
+    # Surge pricing (when cfg.pricing.enabled): "local" = the simulator prices every zone itself, exactly
+    # as offline; "service" = prices come from ridesync.live.pricing over zone-prices (from Flink features).
+    price_source: str = "local"
 
 
 class LiveSimulation(Simulation):
@@ -58,8 +61,12 @@ class LiveSimulation(Simulation):
         self.live = live
         self.bus = bus
         self.producer = bus.producer()
+        if live.price_source not in ("local", "service"):
+            raise ValueError(f"unknown price source {live.price_source!r}; use 'local' or 'service'")
+        self.price_service = self.pricing_on and live.price_source == "service"
         # Assigned before run_start is sent, so every offer for this run is seen.
-        self.inbox = bus.consumer([DISPATCH_OFFERS, DISPATCH_BATCHES], from_beginning=False)
+        inbox = [DISPATCH_OFFERS, DISPATCH_BATCHES] + ([ZONE_PRICES] if self.price_service else [])
+        self.inbox = bus.consumer(inbox, from_beginning=False)
         self.started_ms = int(time.time() * 1000)
         self.run_id = run_id or f"{self.started_ms}-seed{cfg.seed}"
         self.lockstep: Optional[Callable[[], None]] = None
@@ -117,6 +124,20 @@ class LiveSimulation(Simulation):
                 msg["quoted_eta_s"] = r.quoted_eta_s
         self._send(RIDER_EVENTS, r.spec.id, msg)
 
+    def _publish_quote(self, r: Rider, m: float, accepted: bool) -> None:
+        self._send(RIDER_EVENTS, r.spec.id, {"type": "quoted", "rider": r.spec.id, "origin": r.spec.origin.tolist(),
+                                            "multiplier": m, "accepted": accepted, "attempt": r.attempt})
+
+    def _publish_prices(self, prices: Dict[int, float], demand: Dict[int, float], supply: Dict[int, float]) -> None:
+        self._send(ZONE_PRICES, self.run_id, {
+            "type": "prices", "prices": {str(z): m for z, m in prices.items()},
+            "demand": {str(z): round(v, 3) for z, v in demand.items()},
+            "supply": {str(z): v for z, v in supply.items()}, "source": "simulator"})
+
+    def _schedule_pricing(self) -> None:
+        if not self.price_service:  # the pricing service decides instead
+            super()._schedule_pricing()
+
     def _publish_driver(self, d: Driver) -> None:
         self._status_seq[d.id] += 1
         self._send(DRIVER_EVENTS, d.id, {
@@ -128,13 +149,17 @@ class LiveSimulation(Simulation):
     def run(self) -> "LiveSimulation":
         self._wall0 = time.monotonic()
         self._wall0_ms = time.time() * 1000
+        extra = {"start": self.start.isoformat() if self.start else None, "sample_frac": self.sample_frac,
+                 "pricing": asdict(self.cfg.pricing), "price_source": self.live.price_source}
         self._broadcast("run_start", started_ms=self.started_ms,
-                        config=run_config(self.cfg.dispatch, self.cfg.travel, self.live.offer_timeout_s))
+                        config=run_config(self.cfg.dispatch, self.cfg.belief or self.cfg.travel,
+                                          self.live.offer_timeout_s, extra))
         for d in self.drivers:
             self._publish_driver(d)
         for r in self.riders:
             self._schedule(r.spec.request_t, REQUEST, r.spec.id)
         self._schedule_tick()
+        self._schedule_pricing()
         if self.live.ping_s > 0:
             self._schedule(self.live.ping_s, PING)
         self.producer.flush()
@@ -205,6 +230,9 @@ class LiveSimulation(Simulation):
                     nxt = self._events[0][0] if self._events else float("inf")
                     self.now = max(self.now, min(self._clock(), nxt))
                 self.apply_offer(v)
+            elif v["type"] == "prices" and self.price_service:
+                self.prices = {int(z): float(m) for z, m in v["prices"].items()}
+                self.price_log.append((self.now, self.prices, v.get("demand"), v.get("supply")))
             elif v["type"] == "batch":
                 self.stats.record_batch(v["riders"], v["drivers"], v["solve_ms"], v["cost"], v["shadow_cost"])
                 if v.get("tick_lag_ms") is not None:

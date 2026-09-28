@@ -1,0 +1,110 @@
+"""M6: does a better ETA model help dispatch? The matcher's belief vs the world's truth.
+
+    python -m ridesync.ml.train eta --base straight
+    python experiments/m6_eta_sim.py [--base straight|osrm] [--drivers 400] [--seeds 6]
+
+The world drives with the learned correction on top of the calibrated base, plus per-trip lognormal
+noise (sigma from the model's own test residuals unless --noise is given). That is our best
+estimate of real Manhattan driving, and it is also the model under test: the experiment measures how
+much a matcher loses by not knowing where and when the roads are slow, assuming the correction is
+right. It is not an independent test of the correction; the accuracy tables in
+m6_eta_<base>_report.md are.
+
+Arms (same world, same seeds):
+- ``global_multiplier``: the matcher uses the calibrated base (one speed or multiplier for the city).
+- ``learned_eta``: the matcher uses the corrected model (noise-free).
+
+Read the cancellation column with care. Riders cancel when the *quoted* ETA is too long, but never
+while the driver is on the way (``RiderBehavior``). An optimistic quote is therefore never punished:
+the rider accepts, then simply waits longer. A matcher with honest ETAs can show *more* cancellations
+for that reason alone. Quote accuracy (|ETA error|, late > 2 min) is the fair comparison.
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+import time
+from dataclasses import replace
+from pathlib import Path
+
+from ridesync.experiments import Arm, paired_summary, run_grid
+from ridesync.matching import CancelBelief, CostParams
+from ridesync.ml.eta import MODEL_PATH, load_bundle
+from ridesync.routing import travel_from_calibration
+from ridesync.sim import SimConfig
+
+RESULTS = Path(__file__).parent / "results"
+DEFAULT_SLICE = "data/processed/trips_2024-03-13_1700_3h_manhattan_f0.1.parquet"
+AWARE = CostParams(trip_value_s=900.0, cancel=CancelBelief())
+METRICS = ["eta_abs_error_mean_s", "eta_error_mean_s", "eta_late_2min_frac", "cancel_rate", "cancel_eta_rate",
+           "wait_all_mean_s", "pickup_mean_s", "completed_per_hour", "driver_idle_frac"]
+
+
+def main():
+    sys.stdout.reconfigure(encoding="utf-8")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--base", choices=["straight", "osrm"], default="straight")
+    ap.add_argument("--osrm-url", default="http://localhost:5000")
+    ap.add_argument("--slice", default=DEFAULT_SLICE)
+    ap.add_argument("--drivers", type=int, nargs="+", default=[400])
+    ap.add_argument("--seeds", type=int, default=6)
+    ap.add_argument("--noise", type=float, default=None, help="world noise sigma (default: model residual, robust)")
+    ap.add_argument("--workers", type=int, default=None)
+    args = ap.parse_args()
+
+    model_path = MODEL_PATH.format(base=args.base)
+    if not Path(model_path).exists():
+        sys.exit(f"no ETA model at {model_path}: run `python -m ridesync.ml.train eta --base {args.base}`")
+    bundle = load_bundle(model_path)
+    sigma = args.noise if args.noise is not None else bundle["residual_iqr_sigma"]
+
+    base_travel = travel_from_calibration(args.base, args.osrm_url)
+    world = replace(base_travel, eta_model=model_path, noise_sigma=sigma)
+    base = SimConfig(travel=world).with_(**{
+        "demand.trips_path": args.slice, "demand.duration_s": 3 * 3600.0, "demand.warmup_s": 1800.0,
+        "dispatch.strategy": "lsa", "dispatch.interval_s": 30.0, "dispatch.cost": AWARE, "dispatch.max_candidates": 20,
+    })
+    arms = [
+        Arm("global_multiplier", {"belief": base_travel}),
+        Arm("learned_eta", {"belief": replace(base_travel, eta_model=model_path)}),
+    ]
+    t0 = time.time()
+    df = run_grid(base, arms, {"drivers.num_drivers": args.drivers}, range(args.seeds), workers=args.workers)
+    print(f"{len(df)} runs in {time.time() - t0:.0f}s")
+    RESULTS.mkdir(exist_ok=True)
+    df.to_csv(RESULTS / f"m6_eta_sim_{args.base}_runs.csv", index=False)
+    s = paired_summary(df, "global_multiplier", METRICS, ["drivers.num_drivers"])
+
+    def d(r, m, scale=1.0, digits=0):
+        v = r.get(f"d_{m}")
+        return "" if v is None or v != v else f"{v * scale:+.{digits}f} ± {r[f'ci_{m}'] * scale:.{digits}f}"
+
+    lines = [f"# M6: matcher ETA belief vs world truth (`{args.base}` base)", "",
+             f"World: calibrated `{args.base}` × learned correction × lognormal noise (sigma {sigma:.3f}). "
+             "Optimal @30 s, cancellation-aware. Deltas paired against `global_multiplier` (mean ± 95% CI).",
+             "`|ETA error|` = |actual match-to-pickup time − quoted ETA|; `late > 2 min` = share of pickups more than "
+             "2 min later than quoted.",
+             "Caveat: simulated riders cancel on a long *quote* but never while the driver is en route, so an "
+             "optimistic belief is not punished for being late. More cancellations under honest ETAs can be that "
+             "artifact alone; compare quote accuracy first.", ""]
+    for n in args.drivers:
+        g = s[s["drivers.num_drivers"] == n]
+        lines += [f"## {n} drivers", "",
+                  "| arm | |ETA error| s | Δ | mean error s | late > 2 min % | cancel % | Δ cancel pp | wait_all s | Δ wait_all s "
+                  "| pickup s | trips/h | Δ trips/h |",
+                  "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+        for _, r in g.iterrows():
+            r = r.to_dict()
+            lines.append(
+                f"| {r['arm']} | {r['eta_abs_error_mean_s']:.0f} | {d(r, 'eta_abs_error_mean_s')} | {r['eta_error_mean_s']:+.0f} "
+                f"| {r['eta_late_2min_frac'] * 100:.1f} | {r['cancel_rate'] * 100:.1f} | {d(r, 'cancel_rate', 100, 1)} "
+                f"| {r['wait_all_mean_s']:.0f} | {d(r, 'wait_all_mean_s')} | {r['pickup_mean_s']:.0f} "
+                f"| {r['completed_per_hour']:.0f} | {d(r, 'completed_per_hour')} |")
+        lines.append("")
+    text = "\n".join(lines) + "\n"
+    (RESULTS / f"m6_eta_sim_{args.base}_report.md").write_text(text, encoding="utf-8")
+    print(text)
+
+
+if __name__ == "__main__":
+    main()

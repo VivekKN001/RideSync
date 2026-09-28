@@ -110,6 +110,8 @@ def build_batch(
     if not driver_ids:
         return None
     origins = np.asarray(origins, dtype=float).reshape(-1, 2)
+    if hasattr(travel, "set_time"):  # time-of-day aware models (M6 ETA correction)
+        travel.set_time(now)
     eta = eta_matrix(travel, positions, origins, offsets, cfg.max_candidates)
     if declined:
         col = {did: j for j, did in enumerate(driver_ids)}

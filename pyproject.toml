@@ -15,6 +15,8 @@ dev = ["pytest>=7"]
 live = ["confluent-kafka>=2.5"]
 # M5 host services: Postgres trip-ledger sink and the live map server. (Flink runs in Docker.)
 web = ["confluent-kafka>=2.5", "psycopg[binary]>=3.2", "fastapi>=0.110", "uvicorn[standard]>=0.29"]
+# M6 models (training and the forecast/ETA arms). The simulator imports them only when a config asks.
+ml = ["scikit-learn>=1.5", "joblib>=1.3", "pandas>=2.0", "pyarrow>=14"]
 
 [tool.setuptools.packages.find]
 include = ["ridesync*"]

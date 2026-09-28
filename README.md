@@ -13,7 +13,7 @@ evaluated on a measurable cost function (wait time, cancellations, driver idle t
 | M3 | Kafka + live simulator + matcher service | done — live mode below; results in `experiments/FINDINGS.md` |
 | M4 | PyFlink job: driver state, windowed zone features, late events | done — stream features below; lateness experiment in `experiments/FINDINGS.md` |
 | M5 | Postgres sink, ClickHouse, Grafana, deck.gl live map | done — screens below |
-| M6 | ML: OSRM ETA correction feeding edge costs, demand forecast, surge policy + elasticity | |
+| M6 | ML: OSRM ETA correction feeding edge costs, demand forecast, surge policy + elasticity | code done — models and results: `python -m ridesync.ml.train`, then the M6 experiments |
 | M7 | (optional) Idle-driver repositioning | |
 
 ## Decisions
@@ -73,6 +73,34 @@ evaluated on a measurable cost function (wait time, cancellations, driver idle t
   which Grafana loads on start: waiting riders, matches per minute, cancel rate, pickup ETA, solve time, offer
   round trip, a zone table and a run picker.
 
+## Demand forecast, surge pricing, ETA correction (M6)
+
+```
+ TLC March 2024 ──► ridesync.ml.train ──► demand.joblib   zone x 15 min, gradient-boosted trees (Poisson), 15/30/60 min ahead
+                                     ├──► fare.json       median regression of TLC fares on miles and minutes
+                                     └──► eta_<base>.joblib  learned log(observed / base) on top of any travel model
+
+ app open ──► price for the rider's zone ──► requests with probability m^-elasticity, else leaves or retries once
+              ▲ every 5 min: pressure = (expected demand + waiting) / free supply ──► multiplier, steps of 0.25, capped
+              └ expected demand: reactive (last 15 min of opens) or forecast (the demand model)
+```
+
+- **Train on days 1–21, test on 22–31.** Every model is compared with simple baselines on the held-out days
+  (reports in `experiments/results/m6_*_report.md`). Demand features only read buckets before the forecast time;
+  a test blanks the future to prove it.
+- **Surge with a fixed fleet only rations.** No drivers come when prices rise (that would be M7), so surge trades
+  trips for fewer cancellations and more revenue per trip. The question it can answer: do forecast-driven prices beat
+  prices from current counts? Elasticity has no public data, so it's an assumption and the experiment varies it.
+  All riders' price draws are seeded per rider, so arms stay paired. With surge off the simulator is unchanged (tested).
+- **The ETA model learns from trips and is applied to every drive.** TLC records pickup-to-dropoff times, not the
+  driver's drive to the rider, so the correction assumes both slow down the same way. Trip ends are placed on random
+  points in their zones, which puts a floor under the accuracy; the report measures it.
+- **World vs belief.** `SimConfig.belief` is what the matcher assumes, `travel` is what drives really take
+  (optionally with per-trip noise, `travel.noise_sigma`). With the two equal the simulator is unchanged (tested).
+- **Live.** The simulator prices zones itself (identical to offline, tested in lockstep), or with `--price-service`
+  takes prices from `ridesync.live.pricing`, which reads Flink's zone features (app opens, free drivers, waiting)
+  and publishes `zone-prices`. Grafana shows the multiplier, expected vs actual demand and the surging zones.
+
 ## Layout
 
 ```
@@ -84,6 +112,9 @@ ridesync/live/       schema (topics, messages), bus (in-memory) + kafka_bus, wor
 ridesync/stream/     zones (point -> taxi zone, dependency-free), features (zone features + reference runner),
                      job (PyFlink wiring)
 ridesync/sinks/      postgres (trip ledger)
+ridesync/ml/         M6 models: demand (forecast), fare (fit), eta (correction + noisy world), train (CLI)
+ridesync/pricing.py  surge policy, rider conversion, demand estimates (shared by the simulator and live pricing)
+ridesync/live/pricing.py  live pricing service: zone-features -> zone-prices
 ridesync/web/        live map server (FastAPI + WebSocket) and page
 ridesync/viz/        replay page for offline runs
 docker/              Flink image, ClickHouse schema, Postgres schema, Grafana provisioning + dashboard generator
@@ -147,14 +178,35 @@ python experiments/m3_live_vs_offline.py                     # offline vs lockst
 # M4: stream features (Flink UI on http://localhost:8081)
 docker build -t ridesync-flink:1.20 docker/flink             # once
 python -m ridesync.stream.zones                              # once: data/processed/taxi_zones.json
-docker compose up -d flink-jobmanager flink-taskmanager
-docker compose run --rm flink-submit                         # add --lateness-ms 5000 etc. to change the job
+docker compose --profile stream up -d                        # Flink jobmanager + taskmanager
+docker compose --profile stream run --rm flink-submit         # add --lateness-ms 5000 etc. to change the job
 python experiments/m4_lateness.py                            # watermark allowance vs late events
 
+# M6: models (TLC March 2024 in data/raw), then experiments
+pip install -e ".[ml]"
+python -m ridesync.ml.train demand                           # ~1-2 min
+python -m ridesync.ml.train fare                             # ~1 min
+python -m ridesync.ml.train eta --base straight              # ~3 min
+python experiments/m6_surge.py                               # no surge vs reactive vs forecast, 3 fleets x 3 elasticities
+python experiments/m6_eta_sim.py                             # matcher belief: global multiplier vs learned ETA
+docker compose --profile routing up -d osrm                  # optional: the same on road times
+python -m ridesync.ml.train eta --base osrm
+python experiments/m6_eta_sim.py --base osrm
+
+# M6 live: surge on the live map and dashboards
+python -m ridesync.live.sim --speed 20 --surge forecast                  # the simulator prices zones itself
+python -m ridesync.live.pricing                                          # or: a separate pricing service (needs Flink)
+python -m ridesync.live.sim --speed 20 --surge forecast --price-service
+
 # M5: storage and screens
-docker compose up -d clickhouse postgres grafana             # Grafana on http://localhost:3000
+docker compose --profile storage up -d                       # Grafana on http://localhost:3000
+# existing ClickHouse volume from before M6 (init scripts run only once):
+docker compose exec -T clickhouse clickhouse-client --multiquery < docker/clickhouse/init/02_m6.sql
 python -m ridesync.sinks.postgres                            # terminal: trip ledger
 python -m ridesync.web                                       # terminal: live map on http://localhost:8000
 python -m ridesync.live.matcher                              # terminal
 python -m ridesync.live.sim --speed 20                       # then watch the map and dashboards
+
+# Done for the day: stop everything (a plain `docker compose stop` only stops Kafka)
+docker compose --profile "*" stop
 ```
