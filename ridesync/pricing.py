@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Deque, Dict, Mapping, Optional, Tuple
+from typing import TYPE_CHECKING, Deque, Dict, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -42,9 +42,20 @@ def conversion(m: float, elasticity: float) -> float:
 
 
 def zone_prices(zones, demand: Mapping[int, float], waiting: Mapping[int, float], supply: Mapping[int, float],
-                cfg: "PricingConfig") -> Dict[int, float]:
-    """Multiplier per zone. Zones without demand or waiting riders stay at 1."""
-    return {z: multiplier(pressure(demand.get(z, 0.0), waiting.get(z, 0.0), supply.get(z, 0.0)), cfg) for z in zones}
+                cfg: "PricingConfig", neighbours: Optional[Mapping[int, Sequence[int]]] = None) -> Dict[int, float]:
+    """Multiplier per zone. Zones without demand or waiting riders stay at 1.
+
+    With ``neighbours`` (zone -> nearby zones, itself included) a zone's pressure pools demand, waiting
+    riders and supply over its neighbourhood: a free driver one zone over can still take the ride.
+    """
+    if not neighbours:
+        return {z: multiplier(pressure(demand.get(z, 0.0), waiting.get(z, 0.0), supply.get(z, 0.0)), cfg) for z in zones}
+    out = {}
+    for z in zones:
+        nb = neighbours.get(z) or (z,)
+        out[z] = multiplier(pressure(sum(demand.get(y, 0.0) for y in nb), sum(waiting.get(y, 0.0) for y in nb),
+                                     sum(supply.get(y, 0.0) for y in nb)), cfg)
+    return out
 
 
 class DemandEstimator:

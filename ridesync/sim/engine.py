@@ -156,6 +156,7 @@ class Simulation:
 
                 fc = load_or_none(cfg.pricing.forecast_path)
             self.zones = ZoneIndex.load(cfg.pricing.zones_path)
+            self.neighbours = self.zones.neighbours(cfg.pricing.pool_radius_m) if cfg.pricing.pool_radius_m > 0 else None
             self.estimator = DemandEstimator(cfg.pricing, self.start, self.sample_frac, fc)
 
     # ----------------------------------------------------------------- events
@@ -333,7 +334,7 @@ class Simulation:
             zones |= set(self.estimator.fc.zones)
         zones = sorted(zones)
         demand = self.estimator.estimate(zones, self.now)
-        self.prices = zone_prices(zones, demand, waiting, supply, pc)
+        self.prices = zone_prices(zones, demand, waiting, supply, pc, self.neighbours)
         self.price_log.append((self.now, self.prices, demand, dict(supply)))
         self._publish_prices(self.prices, demand, {z: float(supply.get(z, 0)) for z in zones})
         if self.now + pc.interval_s < self.cfg.demand.duration_s:

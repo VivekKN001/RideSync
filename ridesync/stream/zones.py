@@ -40,6 +40,11 @@ class ZoneIndex:
         """``zones``: [{"id", "name", "borough", "polygons": [[[lat, lon], ...], ...]}]; only exterior rings."""
         self.names: Dict[int, str] = {z["id"]: z["name"] for z in zones}
         self.boroughs: Dict[int, str] = {z["id"]: z["borough"] for z in zones}
+        # Rough centre per zone (mean of its ring vertices): good enough to tell which zones are near.
+        self.centroids: Dict[int, Tuple[float, float]] = {}
+        for z in zones:
+            pts = [p for ring in z["polygons"] for p in ring]
+            self.centroids[z["id"]] = (sum(float(p[0]) for p in pts) / len(pts), sum(float(p[1]) for p in pts) / len(pts))
         self._polys: List[Tuple[int, Tuple[float, float, float, float], Ring]] = []
         self._grid: Dict[Tuple[int, int], List[int]] = {}
         for z in zones:
@@ -62,6 +67,13 @@ class ZoneIndex:
             if a <= lat <= b and c <= lon <= d and _in_ring(lat, lon, ring):
                 return zid
         return OUTSIDE
+
+    def neighbours(self, radius_m: float) -> Dict[int, List[int]]:
+        """Zones whose centroids lie within ``radius_m`` of each zone's centroid (always including itself)."""
+        ids = list(self.centroids)
+        lat0 = math.radians(sum(c[0] for c in self.centroids.values()) / max(len(ids), 1))
+        xy = {z: (lat * 111_320.0, lon * 111_320.0 * math.cos(lat0)) for z, (lat, lon) in self.centroids.items()}
+        return {z: [y for y in ids if y == z or math.dist(xy[z], xy[y]) <= radius_m] for z in ids}
 
     @classmethod
     def load(cls, path: str = ZONES_JSON) -> "ZoneIndex":

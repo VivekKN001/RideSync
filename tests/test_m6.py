@@ -22,11 +22,12 @@ from ridesync.ml.demand import (
 )
 from ridesync.ml.eta import CorrectedModel, NoisyModel, check_base
 from ridesync.ml.fare import fares
-from ridesync.pricing import DemandEstimator, conversion, multiplier, pressure
+from ridesync.pricing import DemandEstimator, conversion, multiplier, pressure, zone_prices
 from ridesync.sim import SimConfig, simulate, summarize
 from ridesync.sim.config import DemandConfig, FareConfig, PricingConfig, TravelConfig
 from ridesync.sim.engine import RiderState
 from ridesync.stream.features import run_reference
+from ridesync.stream.zones import ZoneIndex
 
 ZONES_JSON = Path("data/processed/taxi_zones.json")
 needs_zones = pytest.mark.skipif(not ZONES_JSON.exists(), reason="run `python -m ridesync.stream.zones` first")
@@ -115,7 +116,7 @@ def test_forecaster_trains_evaluates_and_round_trips(tmp_path):
 
 # ------------------------------------------------------------------ pricing policy
 def test_multiplier_steps_and_cap():
-    cfg = PricingConfig()
+    cfg = PricingConfig(threshold=1.0, slope=0.5)
     assert multiplier(0.0, cfg) == 1.0 and multiplier(1.0, cfg) == 1.0
     assert multiplier(1.49, cfg) == 1.0 and multiplier(1.5, cfg) == 1.25
     assert multiplier(3.0, cfg) == 2.0 and multiplier(99.0, cfg) == cfg.cap
@@ -123,6 +124,24 @@ def test_multiplier_steps_and_cap():
     ms = [multiplier(p, cfg) for p in ps]
     assert all(a <= b for a, b in zip(ms, ms[1:]))
     assert pressure(3, 1, 0) == 4.0 and pressure(3, 1, 2) == 2.0
+
+
+def test_pooled_pressure_uses_neighbours_supply():
+    cfg = PricingConfig(threshold=1.0, slope=0.5)
+    demand, waiting, supply = {1: 4.0, 2: 0.0}, {}, {1: 0.0, 2: 4.0}
+    assert zone_prices([1, 2], demand, waiting, supply, cfg) == {1: cfg.cap, 2: 1.0}
+    pooled = zone_prices([1, 2], demand, waiting, supply, cfg, {1: [1, 2], 2: [2, 1]})
+    assert pooled == {1: 1.0, 2: 1.0}  # a free driver next door covers zone 1's riders
+
+
+def test_zone_neighbours_by_centroid():
+    sq = lambda lat, lon: [[[lat, lon], [lat + 0.001, lon], [lat + 0.001, lon + 0.001], [lat, lon + 0.001]]]
+    zi = ZoneIndex([{"id": 1, "name": "a", "borough": "x", "polygons": sq(40.70, -74.0)},
+                    {"id": 2, "name": "b", "borough": "x", "polygons": sq(40.71, -74.0)},   # ~1.1 km north
+                    {"id": 3, "name": "c", "borough": "x", "polygons": sq(40.75, -74.0)}])  # ~5.6 km north
+    nb = zi.neighbours(2000.0)
+    assert sorted(nb[1]) == [1, 2] and sorted(nb[2]) == [1, 2] and nb[3] == [3]
+    assert zi.neighbours(0.0)[1] == [1]
 
 
 def test_conversion():

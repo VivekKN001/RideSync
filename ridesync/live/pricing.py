@@ -61,6 +61,11 @@ class PricingService:
 
             fc = self.forecaster = load_or_none(self.cfg.forecast_path)
         self.est = DemandEstimator(self.cfg, start, float(cfg.get("sample_frac") or 1.0), fc)
+        self.neighbours = None
+        if self.cfg.pool_radius_m > 0:
+            from ..stream.zones import ZoneIndex
+
+            self.neighbours = ZoneIndex.load(self.cfg.zones_path).neighbours(self.cfg.pool_radius_m)
         self.idle: Dict[int, tuple] = {}             # zone -> (minute, free drivers at its end)
         self.waiting: Dict[int, float] = defaultdict(float)
         self.next_t = self.cfg.interval_s
@@ -93,7 +98,7 @@ class PricingService:
             zones |= set(self.est.fc.zones)
         zones = sorted(zones)
         demand = self.est.estimate(zones, t)
-        prices = zone_prices(zones, demand, self.waiting, supply, self.cfg)
+        prices = zone_prices(zones, demand, self.waiting, supply, self.cfg, self.neighbours)
         self.producer.produce(ZONE_PRICES, self.run, {
             "v": VERSION, "type": "prices", "run": self.run, "t": t, "ts": ts,
             "prices": {str(z): p for z, p in prices.items()},

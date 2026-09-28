@@ -96,7 +96,8 @@ def main():
     if any(a.label == "surge_forecast" for a in arms) and not Path(base.pricing.forecast_path).exists():
         sys.exit(f"no demand model at {base.pricing.forecast_path}: run `python -m ridesync.ml.train demand` or pass --no-forecast")
     p = base.pricing
-    notes.append(f"Policy: every {p.interval_s:.0f} s, pressure = (demand over {p.horizon_s:.0f} s + waiting) / free supply; "
+    notes.append(f"Policy: every {p.interval_s:.0f} s, pressure = (demand over {p.horizon_s:.0f} s + waiting) / free supply, "
+                 f"pooled over zones within {p.pool_radius_m:.0f} m; "
                  f"multiplier = 1 + {p.slope:g} × (pressure − {p.threshold:g}), steps of {p.step:g}, cap {p.cap:g}. "
                  f"Riders who decline leave with probability {p.leave_prob:g}, else retry once after a median "
                  f"{p.retry_median_s:.0f} s.")

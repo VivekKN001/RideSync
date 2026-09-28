@@ -117,7 +117,8 @@ class PricingConfig:
 
     Every ``interval_s`` each taxi zone gets a multiplier from its pressure,
     ``(expected demand over horizon_s + riders waiting) / max(free supply, 1)``, where supply is idle
-    drivers in the zone plus on-trip drivers finishing there within the chaining horizon. The multiplier
+    drivers in the zone plus on-trip drivers finishing there within the chaining horizon, all summed over
+    the zones within ``pool_radius_m``. The multiplier
     is ``1 + slope * (pressure - threshold)``, floored to ``step`` and clipped to [1, cap].
 
     Expected demand is either ``reactive`` (app opens in the zone over the last ``horizon_s``) or
@@ -133,8 +134,13 @@ class PricingConfig:
     demand: str = "reactive"  # "reactive" or "forecast"
     interval_s: float = 300.0
     horizon_s: float = 900.0
-    threshold: float = 1.0
-    slope: float = 0.5
+    # Pressure pools zones within pool_radius_m (0 = each zone alone). Per zone, a 10% slice has a few
+    # riders and 0-1 free drivers, so unpooled pressure is mostly noise and surged ~half the trips even
+    # with a third of the fleet idle. Pooled over 2 km, the median pressure is ~2 at 500 drivers and ~20
+    # at 300; the threshold and slope put the first 0.25 step at 5.25 and the cap at 11.5.
+    pool_radius_m: float = 2000.0
+    threshold: float = 4.0
+    slope: float = 0.2
     cap: float = 2.5
     step: float = 0.25
     elasticity: float = 0.5

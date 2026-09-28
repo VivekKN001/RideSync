@@ -180,33 +180,38 @@ minimum $8.21 (median absolute error $4.87). These fares drive the revenue colum
 
 ## Surge pricing (6b): with a fixed fleet, surge rations demand
 
-Same 3 h slice, optimal @30 s, cancellation-aware. Every 5 minutes, surge sets a multiplier per zone from
-pressure = demand / free supply. Riders accept a price with probability m^−ε. Half of those who decline leave;
-the other half retry once. 6 seeds, paired against no surge. Rows are forecast-driven surge vs no surge
-(reactive is the same within noise):
+Same 3 h slice, optimal @30 s, cancellation-aware. Every 5 minutes, each zone gets a multiplier from
+pressure = (expected demand over 15 min + waiting riders) / free drivers, pooled over zones within 2 km. Riders
+accept a price with probability m^−ε. Half of those who decline leave; the other half retry once. 6 seeds,
+paired against no surge. Rows are forecast-driven surge vs no surge (reactive is the same within noise):
 
-| drivers | ε | Δ cancel pp | Δ wait_all s | Δ served pp | Δ trips/h | Δ revenue/h | surged trips |
+| drivers | ε | no-surge cancel | Δ cancel pp | Δ wait_all s | Δ trips/h | Δ revenue/h | surged trips |
 |---|---|---|---|---|---|---|---|
-| 300 | 0.3 | −7.9 ± 0.4 | −29 ± 5 | −2.7 ± 0.4 | −30 ± 4 | +109% | 91% |
-| 300 | 0.8 | −16.4 ± 0.7 | −115 ± 6 | −9.5 ± 0.4 | −107 ± 4 | +64% | 79% |
-| 400 | 0.5 | −3.3 ± 0.4 | −53 ± 4 | −10.0 ± 0.5 | −113 ± 5 | +51% | 65% |
-| 500 | 0.5 | −1.7 ± 0.4 | −35 ± 2 | −8.7 ± 0.4 | −97 ± 5 | +37% | 51% |
+| 300 | 0.3 | 21.8% | −7.4 | −22 | −28 ± 5 (−3.2%) | +102% | 87% |
+| 300 | 0.8 | 21.8% | −13.8 | −74 | −56 ± 6 (−6.4%) | +48% | 67% |
+| 400 | 0.5 | 6.5% | −1.6 | −23 | −32 ± 4 (−3.0%) | +18% | 29% |
+| 500 | 0.5 | 3.5% | −0.5 | −4 | −7 ± 3 (−0.7%) | +5% | 8% |
 
-**Surge reduces trips in every cell.** Cancellations and waits fall because price turns riders away before
-they are matched. Fewer riders complete trips, not more (−3% to −15% trips/h). This is expected: the fleet is
-fixed, so higher prices cannot attract more drivers. The gain in the simulator is *queue quality* (at 300
-drivers, ε 0.5: cancellations 21.8% → 9.4%, wait −67 s), and the revenue gain comes from the multiplier.
+**Calibrating the trigger.** The first version priced each zone alone, with the surge starting at pressure 1.
+It surged 43–91% of trips in every cell, including 51% at 500 drivers, where cancellations are only 3.5% and a
+third of the fleet sits idle. The diagnostic (`pricing.elasticity = 0`, so prices change nothing) showed why.
+Per zone, a 10% slice has 2–3 riders per 15 minutes and 0–1 free drivers, so a third of demand at 500 drivers
+came from zones with *no* free driver at that moment, while idle drivers waited one zone over. Pooling over
+2 km turns this into a signal that tracks scarcity: median pressure is about 2 at 500 drivers and about 20 at
+300, compared with 2 vs 4 per zone. The threshold (4) and slope (0.2) put the first 0.25 step at pressure 5.25
+and the 2.5× cap at 11.5. The first version's full results are in the git history (`fbd7962`).
+
+**Surge now scales with scarcity.** At 500 drivers it barely fires (8% of trips, −0.7% trips/h). At 300 drivers
+it surges most trips and cuts cancellations from 21.8% to 8–14%.
+
+**It still never adds trips.** The fleet is fixed, so higher prices cannot attract more drivers. Trips/h falls
+0.6–6.4% and the gain is queue quality: fewer cancellations and shorter waits, plus the multiplier's revenue.
 Showing surge increasing throughput would need a driver-supply response, which this simulator does not model.
 
-**The forecast barely beats reacting to current demand.** Forecast − reactive stays within about ±0.5 pp and
-±5 trips/h everywhere. Revenue is up to +$700/h at 300 drivers, where the forecast arm surges slightly more often.
-Reprices happen every 5 minutes, so reactive pressure is at most about 5 minutes stale. A 16.9% vs 21.4% WAPE
-difference changes very few 0.25-step multiplier decisions.
-
-**The policy surges too often.** Even at 500 drivers, where no-surge cancellations are only 3.5%, half of all
-trips are surged. Pressure compares 15 minutes of demand with drivers free *right now*, and drivers turn over
-several times in 15 minutes, so pressure sits above the threshold of 1 in normal conditions. The threshold
-should be tuned before surge is presented as a product result. The mechanism and the comparison stand as they are.
+**The forecast still doesn't beat reacting to current demand.** Forecast − reactive stays within noise in
+every cell (≤ 0.4 pp cancel, ≤ 4 trips/h). Reprices happen every 5 minutes, so reactive demand is at most
+about 5 minutes stale, and a 16.9% vs 21.4% WAPE difference changes few 0.25-step decisions. The forecast would
+matter for a slower lever, such as moving drivers ahead of demand (M7).
 
 ## ETA correction (6c)
 
@@ -241,5 +246,5 @@ throughput right would need riders who can cancel while the driver is en route (
 
 **Framing:** "A GBT demand forecast beats the best baseline by ~5 pp WAPE. A learned ETA correction halves
 travel-time error, and in simulation it cuts late pickups from 79% to 13%. Surge with a fixed fleet trades
-throughput for shorter queues and fewer cancellations. Its real benefit depends on a driver-supply response,
-which is out of scope."
+throughput for shorter queues and fewer cancellations, mostly where drivers are scarce. Its real benefit
+depends on a driver-supply response, which is out of scope."
