@@ -228,6 +228,20 @@ The learned correction halves the error of the calibrated base, and it clearly b
 the remaining error is noise the model can't remove: placing the same trip at random points in its zones
 already moves the base time by a median 13.9%.
 
+**Road times help the raw base, but not the corrected model.** On OSRM road times instead of straight lines
+(`results/m6_eta_osrm_report.md`):
+
+| base | base alone MAPE | zone × hour table | learned correction MAPE | median APE | p90 APE |
+|---|---|---|---|---|---|
+| straight line | 51.5% | 39.6% | 24.7% | 18.3% | 51.1% |
+| OSRM roads | 40.7% | 33.9% | **24.5%** | 18.1% | 50.4% |
+
+OSRM is 11 pp better before correction, and it wins on every simple method. After the learned correction the
+two bases end up the same (0.2 pp apart). With only a zone and an hour as input, the model already learns what
+the road network adds at this level. What remains comes from inputs we don't have: exact addresses (placement
+alone moves the base time 14%), live traffic, and trip-to-trip variation. Better roads won't close that gap.
+Better inputs would.
+
 **In the simulator** (`m6_eta_sim.py`, 400 drivers, 6 seeds, paired): the world drives on the corrected model
 plus noise, and the matcher believes either the global base or the learned model.
 
