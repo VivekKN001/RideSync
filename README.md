@@ -6,6 +6,102 @@ Real-time ride-hailing dispatch: batched optimal bipartite matching (Hungarian) 
 evaluated on a measurable cost function (wait time, cancellations, driver idle time), on real Manhattan
 demand (NYC TLC, March 2024) and road times (OSRM), live over Kafka + Flink, with ML for demand, ETA and surge.
 
+**Contents:** [The problem](#the-problem) · [What RideSync does](#what-ridesync-does) ·
+[Architecture](#architecture) · [Tech stack](#tech-stack) · [Quick start](#quick-start) · [Results](#results) ·
+[Limitations](#limitations) · [Deep dives](#decisions) · [Layout](#layout) · [Run everything](#run)
+
+## The problem
+
+When a rider asks for a car, a ride-hailing platform has a few seconds to decide which driver to send, while
+new requests and driver positions keep arriving. The obvious rule is to send the nearest free driver the moment
+a request comes in, but it is short-sighted:
+
+- It may take the only driver near one rider to serve another rider who had other options.
+- When drivers are scarce, a freed driver goes to whoever has waited longest, however far away. That means long
+  pickups, and riders cancel when they see the quoted ETA.
+- Every bad decision costs something measurable: rider wait, lost trips (cancellations) and drivers driving
+  empty.
+
+Other questions surround the matching decision. How long will the pickup really take (ETA)? Where will demand be
+in 15 minutes? Should prices rise? Where should idle drivers wait? A real system also answers them over event
+streams, where messages arrive late and out of order and services restart, and the numbers still have to add up.
+
+## What RideSync does
+
+RideSync builds a complete dispatch system and **measures which ideas actually pay off** on real New York demand.
+Each claim below comes from a paired, seeded experiment in [`experiments/`](experiments/), and the negative
+results are reported alongside the positive ones.
+
+- **Batched, optimal matching.** Requests are collected for a few seconds, and each batch is solved as a
+  minimum-cost bipartite matching with the Hungarian algorithm (written from scratch). Several greedy rules serve
+  as baselines.
+- **A cost that counts what matters.** The cost covers pickup time, how likely a rider is to cancel, and how long
+  the rider has already waited (fairness).
+- **Real city, real demand.** Riders are replayed from NYC TLC trip records for Manhattan. Drives follow the road
+  network (OpenStreetMap + OSRM), with times fitted to real trip durations.
+- **Live, not just offline.** The same matcher runs as a service over Kafka. Flink computes per-zone stream
+  features, with explicit handling of late events. A trip ledger goes to Postgres, event history to ClickHouse,
+  and the system appears on Grafana dashboards and a live map.
+- **ML where it helps.** The models are a demand forecast, a learned ETA correction with ranges, a fare fit, a
+  surge-pricing policy and idle-driver repositioning.
+
+## Architecture
+
+```
+ Data & models                      Offline mode (experiments)                  Live mode (demo)
+ ─────────────                      ──────────────────────────                  ────────────────
+ NYC TLC trips (Mar 2024) ──┐       seeded discrete-event simulator             live simulator (same engine,
+ taxi zones ────────────────┼──►    faster than real time                       paced at N× wall clock)
+ OpenStreetMap ─► OSRM ─────┘            │                                         │ ▲  Kafka topics
+        │                                ▼                                         ▼ │
+        │ ridesync.ml.train     ridesync.dispatch  ◄── one shared matcher ──►  matcher service
+        ▼                       batch → ETA matrix → Hungarian / greedy            │
+ demand · ETA · fare models ──► (used by both modes)                               ├─► Flink zone features ─► pricing service
+                                         │                                         ├─► ClickHouse ─┐
+                                         ▼                                         ├─► Postgres ───┴─► Grafana :3000
+                                paired metrics, reports                            └─► FastAPI/WebSocket ─► live map :8000
+                                (experiments/results)
+```
+
+Offline and live build and solve batches with the same `ridesync.dispatch` code. A lockstep test shows that the
+live path, run with zero latency, gives results bit-identical to offline, so any difference between the modes is
+latency alone. The per-milestone diagrams are further down: [live mode](#live-mode-m3),
+[stream features](#stream-features-and-screens-m4-m5), [ML and surge](#demand-forecast-surge-pricing-eta-correction-m6)
+and [repositioning](#repositioning-m7).
+
+## Tech stack
+
+| Area | Technology | Used for |
+|---|---|---|
+| Language | Python 3.10–3.13 | One package shared by the simulator, services and Flink job (PyFlink needs 3.10/3.11 compatibility) |
+| Matching | NumPy, Hungarian / Kuhn-Munkres written from scratch | Solving each batch; SciPy `linear_sum_assignment` is a test oracle and the repositioning solver |
+| Routing | OSRM 6.0 (MLD) on an OpenStreetMap NYC extract | Road travel times and routes, scaled to fit TLC trip times |
+| Data | NYC TLC High-Volume FHV trips, taxi zones; pandas, PyArrow, GeoPandas/Shapely | Demand replay, placing trip ends inside zone polygons, training data |
+| Messaging | Apache Kafka 3.9 (KRaft), `confluent-kafka` | World events, offers and responses, batch stats, zone features and prices |
+| Stream processing | Apache Flink 1.20 (PyFlink) | Driver state, windowed zone features, watermarks and late events |
+| Storage | ClickHouse 24.8 (Kafka engine), PostgreSQL 16 (`psycopg` 3) | Event history and time series; idempotent trip ledger |
+| Dashboards | Grafana 11.4 + ClickHouse plugin | Dashboards generated from code (`docker/grafana/make_dashboard.py`) |
+| Live map | FastAPI, WebSocket, uvicorn, deck.gl 9, MapLibre GL 4 | Drivers and riders moving in real time |
+| ML | scikit-learn (gradient-boosted trees, quantile regression), joblib | Demand forecast, ETA correction with 10–90% ranges, fare fit |
+| Infra | Docker Compose (profiles), GitHub Actions | One-command services; tests on Python 3.10 and 3.13 on every push |
+
+## Quick start
+
+You need Python 3.10+. Docker Desktop is needed only for the live parts. Plan for about 1.7 GB of RAM for the
+Kafka/storage/Grafana stack, 2.4 GB more for Flink, and about 3 GB for the one-off OSRM preprocessing.
+
+```
+git clone https://github.com/VivekKN001/RideSync.git && cd RideSync
+python -m venv .venv
+.venv\Scripts\activate                 # Linux/macOS: source .venv/bin/activate
+pip install -e ".[dev]"
+pytest                                 # ~800 tests; those needing data, models, Kafka or Postgres skip themselves
+python experiments/m1_batching.py      # batching vs greedy in a synthetic city: no downloads, no Docker
+```
+
+From there, [Run](#run) goes milestone by milestone: download the real data, start the road network, run live
+mode over Kafka, add Flink, storage and dashboards, train the models and rerun every experiment.
+
 ## Results
 
 Every number is a paired comparison over seeded runs (same riders, same draws), mean ± 95% CI. Details, tables and
@@ -35,6 +131,19 @@ caveats: [`experiments/FINDINGS.md`](experiments/FINDINGS.md).
 | M5 | Postgres sink, ClickHouse, Grafana, deck.gl live map | done: screens below |
 | M6 | ML: demand forecast, ETA correction (live traffic, ranges), fare fit, surge policy + elasticity | done |
 | M7 | Idle-driver repositioning: drift baseline vs coordinated plan (offline) | done |
+
+## Limitations
+
+- **Rider behaviour is assumed, not measured.** No public data exists for patience, ETA tolerance or price
+  elasticity, so the experiments vary them instead of claiming one true value.
+- **Zone-level data.** TLC records zones, not coordinates, so trip ends are sampled inside zone polygons. That puts
+  a floor under ETA accuracy, and the M6 report measures it.
+- **One time slice, mostly.** Most results come from one weekday evening peak (2024-03-13, 17:00–20:00, 10% of
+  Manhattan trips), and M7 adds one unseen test day. Morning peaks, weekends and full scale are still to check.
+- **Fixed fleet.** Drivers don't respond to prices, so surge can only ration demand (see the results).
+- **No reassignment after dispatch.** Repositioning and en-route cancellation run offline only; the live matcher
+  doesn't track those states yet.
+- **Single machine.** Kafka has one broker and no replication. The live stack is a demo, not a deployment.
 
 ## Decisions
 
@@ -99,8 +208,9 @@ passenger; riders waiting for a match are pink.
 
 ![Live map](docs/img/live_map.png)
 
-**Grafana** (http://localhost:3000) during the same run. The panels marked "(from Flink)", the simulated clock and
-the zone table need the `stream` profile; this capture ran without it to save memory.
+**Grafana** (http://localhost:3000) during a live run of the same slice at 10× with 450 drivers, the Flink job
+running and surge priced by the separate pricing service (`--surge forecast --price-service`). The panels marked
+"(from Flink)", the zone table, late events and the surge panels come from the `stream` profile.
 
 ![Grafana dashboard](docs/img/grafana.png)
 

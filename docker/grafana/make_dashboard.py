@@ -37,10 +37,13 @@ def ch(sql, fmt):
             "format": 0 if fmt == "timeseries" else 1, "queryType": fmt}
 
 
-def stat(title, sql, unit="none", decimals=None, w=4, desc=""):
+def stat(title, sql, unit="none", decimals=None, w=4, desc="", text=False):
+    reduce = {"calcs": ["lastNotNull"]}
+    if text:  # a stat panel shows only numeric fields unless told otherwise
+        reduce["fields"] = "/.*/"
     p = {"type": "stat", "title": title, "description": desc, "datasource": CH, "gridPos": place(w, 4),
          "targets": [ch(sql, "table")],
-         "options": {"colorMode": "none", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"]}},
+         "options": {"colorMode": "none", "graphMode": "none", "reduceOptions": reduce},
          "fieldConfig": {"defaults": {"unit": unit}, "overrides": []}}
     if decimals is not None:
         p["fieldConfig"]["defaults"]["decimals"] = decimals
@@ -66,7 +69,7 @@ def table(title, target, ds, w=12, h=9, desc=""):
 
 # ---------------------------------------------------------------- headline
 stat("Simulated clock", f"SELECT formatDateTime(toDateTime('2024-03-13 17:00:00') + toIntervalSecond(toInt32(max(t))), '%H:%i') "
-     f"AS clock FROM rider_events WHERE {RUN}", desc="Replays start at 17:00 on 13 March 2024.")
+     f"AS clock FROM rider_events WHERE {RUN}", desc="Replays start at 17:00 on 13 March 2024.", text=True)
 stat("Ride requests", f"SELECT countIf(type = 'requested') AS requests FROM rider_events WHERE {RUN}")
 stat("Trips completed", f"SELECT countIf(type = 'dropped_off') AS completed FROM rider_events WHERE {RUN}")
 stat("Riders who cancelled", f"SELECT countIf(type = 'cancelled') / greatest(countIf(type = 'requested'), 1) "
