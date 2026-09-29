@@ -61,6 +61,7 @@ def main():
     ap.add_argument("--fleets", type=int, nargs="+", default=[300, 350, 400, 450, 500])
     ap.add_argument("--seeds", type=int, default=6)
     ap.add_argument("--workers", type=int, default=None)
+    ap.add_argument("--arms", nargs="+", default=None, help="only these arms (immediate_greedy, the baseline, is always run)")
     ap.add_argument("--tag", default=None, help="output file prefix under experiments/results (default: m2_<travel>)")
     args = ap.parse_args()
 
@@ -75,7 +76,8 @@ def main():
         "dispatch.max_candidates": 20,
     })
     t0 = time.time()
-    df = run_grid(base, ARMS, {"drivers.num_drivers": args.fleets}, range(args.seeds), workers=args.workers)
+    arms = [a for a in ARMS if args.arms is None or a.label in args.arms or a.label == "immediate_greedy"]
+    df = run_grid(base, arms, {"drivers.num_drivers": args.fleets}, range(args.seeds), workers=args.workers)
     print(f"{len(df)} runs in {time.time() - t0:.0f}s")
 
     observed = pd.read_parquet(args.slice)["observed_wait_s"].dropna()

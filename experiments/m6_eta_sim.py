@@ -63,6 +63,7 @@ def main():
     ap.add_argument("--seeds", type=int, default=6)
     ap.add_argument("--noise", type=float, default=None, help="world noise sigma (default: model residual, robust)")
     ap.add_argument("--workers", type=int, default=None)
+    ap.add_argument("--tag", default=None, help="output file prefix under experiments/results (default: m6_eta_sim)")
     ap.add_argument("--late-tolerance", type=float, nargs="*", default=[],
                     help="median lateness tolerances (s); turns on riders.enroute_cancel")
     args = ap.parse_args()
@@ -100,14 +101,15 @@ def main():
     df = run_grid(base, arms, grid, range(args.seeds), workers=args.workers)
     print(f"{len(df)} runs in {time.time() - t0:.0f}s")
     RESULTS.mkdir(exist_ok=True)
-    df.to_csv(RESULTS / f"m6_eta_sim_{args.base}{suffix}_runs.csv", index=False)
+    tag = args.tag or "m6_eta_sim"
+    df.to_csv(RESULTS / f"{tag}_{args.base}{suffix}_runs.csv", index=False)
     summaries = {b: paired_summary(df, b, METRICS, list(grid)) for b in ("global_multiplier", "dist_hour_table")}
 
     def d(r, m, scale=1.0, digits=0):
         v = r.get(f"d_{m}")
         return "" if v is None or v != v else f"{v * scale:+.{digits}f} ± {r[f'ci_{m}'] * scale:.{digits}f}"
 
-    lines = [f"# M6: matcher ETA belief vs world truth (`{args.base}` base)", "",
+    lines = [f"# {tag.split('_')[0].upper()}: matcher ETA belief vs world truth (`{args.base}` base, `{Path(args.slice).name}`)", "",
              f"World: calibrated `{args.base}` × learned correction × lognormal noise (sigma {sigma:.3f}). "
              "Optimal @30 s, cancellation-aware. Deltas are paired (mean ± 95% CI) against the arm named in each "
              "table's heading.",
@@ -137,7 +139,7 @@ def main():
                     f"| {r['pickup_mean_s']:.0f} | {r['completed_per_hour']:.0f} | {d(r, 'completed_per_hour')} |")
             lines.append("")
     text = "\n".join(lines) + "\n"
-    (RESULTS / f"m6_eta_sim_{args.base}{suffix}_report.md").write_text(text, encoding="utf-8")
+    (RESULTS / f"{tag}_{args.base}{suffix}_report.md").write_text(text, encoding="utf-8")
     print(text)
 
 
