@@ -64,6 +64,7 @@ def test_live_view_follows_the_newest_run():
     v.apply(ev("matched", 30, rider=7, driver=1, quoted_eta_s=90.0))
     snap = v.snapshot()
     assert snap["run"] == "r1" and snap["waiting"] == []
+    assert snap["matches"] == [[7, *REQ["origin"]]]  # where the page draws the match ripple
     assert snap["drivers"] == [[1, 40.72, -73.99, 1, 40.75, -73.98]]  # moving, with a line to the pickup
     v.apply({**ev("zone_minute", 0, zone=230, minute=0, requests=4, idle_end=1), "type": "zone_minute"})
     assert v.snapshot()["zones"] == {"230": 2.0}
@@ -71,3 +72,15 @@ def test_live_view_follows_the_newest_run():
     assert v.snapshot()["run"] == "r1"
     v.apply({**ev("run_start", 0, started_ms=200), "run": "r2"})
     assert v.snapshot()["run"] == "r2" and v.snapshot()["drivers"] == []
+
+
+def test_live_view_waiting_riders_and_matches():
+    v = LiveView()
+    v.apply(ev("run_start", 0, started_ms=100))
+    v.apply(REQ)
+    assert v.snapshot()["waiting"] == [[7, 40.75, -73.98, 5.0]]  # id, position, requested at (for the wait colour)
+    v.apply(ev("matched", 30, rider=7, driver=1, quoted_eta_s=90.0))
+    v.apply(ev("matched", 31, rider=99, driver=2, quoted_eta_s=90.0))  # never seen waiting: nothing to show
+    assert v.snapshot()["matches"] == [[7, 40.75, -73.98]]
+    v.apply(ev("ping", 95, driver=1, pos=[40.72, -73.99]))
+    assert v.snapshot()["matches"] == []  # older than MATCH_SHOW_S

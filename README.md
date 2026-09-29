@@ -202,9 +202,13 @@ caveats: [`experiments/FINDINGS.md`](experiments/FINDINGS.md).
   which Grafana loads on start: waiting riders, matches per minute, cancel rate, pickup ETA, solve time, offer
   round trip, a zone table and a run picker.
 
-**Live map** (http://localhost:8000), a live run of 2024-03-13 17:00 at 10× with 450 drivers and forecast surge.
-Drivers are grey when free, orange on the way to a pickup (with a line to the rider) and purple with a
-passenger; riders waiting for a match are pink.
+**Live map** (http://localhost:8000), 2024-03-13 17:46 with 450 drivers. The island lies across wide screens
+and stays upright on phones. Free drivers are faint grey dots; drivers with a passenger are small blue dots with
+a short tail showing their direction; drivers on the way to a pickup are amber, with a line to the rider. Waiting
+riders pulse, pink turning red as the wait nears their patience. A green ripple marks a match and a red cross a
+cancellation. Zones glow orange when requests outnumbered free drivers in the last closed minute (from Flink).
+Each layer can be hidden from the legend. (This screenshot came from an in-memory run without Kafka or Flink,
+with the per-zone counts computed in-process.)
 
 ![Live map](docs/img/live_map.png)
 

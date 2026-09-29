@@ -27,6 +27,7 @@ from ..stream.zones import ZONES_JSON
 STATIC = Path(__file__).with_name("static")
 STATE_CODE = {"idle": 0, "en_route": 1, "on_trip": 2}
 CANCEL_SHOW_S = 90.0  # simulated seconds a cancellation stays on the map
+MATCH_SHOW_S = 60.0   # simulated seconds a match stays in the snapshot (the page animates each one once)
 
 
 class LiveView:
@@ -40,9 +41,10 @@ class LiveView:
         self.run, self.started_ms = run, started_ms
         self.t = 0.0
         self.drivers: Dict[int, list] = {}      # id -> [lat, lon, state code, to_lat, to_lon]
-        self.waiting: Dict[int, list] = {}      # rider id -> [lat, lon]
+        self.waiting: Dict[int, list] = {}      # rider id -> [lat, lon, requested at t]
         self.origins: Dict[int, list] = {}      # rider id -> [lat, lon] (for placing cancellations)
         self.cancels: List[list] = []           # [lat, lon, t]
+        self.matches: List[list] = []           # [rider id, lat, lon, t]
         self.pressure: Dict[int, dict] = {}     # zone -> latest closed minute's numbers
         self.counts = {"requests": 0, "completed": 0, "cancelled": 0}
         self.ended = False
@@ -74,9 +76,12 @@ class LiveView:
                     d[3] = d[4] = None
             elif typ == "requested":
                 self.counts["requests"] += 1
-                self.waiting[v["rider"]] = self.origins[v["rider"]] = list(v["origin"])
+                self.origins[v["rider"]] = list(v["origin"])
+                self.waiting[v["rider"]] = [*v["origin"], v["t"]]
             elif typ == "matched":
-                self.waiting.pop(v["rider"], None)
+                w = self.waiting.pop(v["rider"], None)
+                if w:
+                    self.matches.append([v["rider"], w[0], w[1], v["t"]])
             elif typ == "cancelled":
                 self.counts["cancelled"] += 1
                 self.waiting.pop(v["rider"], None)
@@ -95,10 +100,12 @@ class LiveView:
     def snapshot(self) -> dict:
         with self.lock:
             self.cancels = [c for c in self.cancels if self.t - c[2] < CANCEL_SHOW_S]
+            self.matches = [m for m in self.matches if self.t - m[3] < MATCH_SHOW_S]
             return {
                 "run": self.run, "t": self.t, "ended": self.ended, "counts": dict(self.counts),
                 "drivers": [[k, *d] for k, d in self.drivers.items()],
-                "waiting": list(self.waiting.values()),
+                "waiting": [[k, *w] for k, w in self.waiting.items()],
+                "matches": [m[:3] for m in self.matches],
                 "cancels": [[c[0], c[1], (self.t - c[2]) / CANCEL_SHOW_S] for c in self.cancels],
                 "zones": {str(z): p["ratio"] for z, p in self.pressure.items()},
             }

@@ -8,114 +8,213 @@
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 <style>
   :root {
-    --ground: #eef1f0; --surface: rgba(250, 251, 250, 0.94); --ink: #15191c; --ink-2: #4c565e; --ink-3: #6f7a82;
-    --rule: #cfd6d6; --idle: #8b949c; --enroute: #eda100; --ontrip: #4a3aa7; --waiting: #e87ba4; --cancel: #e34948;
-    --pressure: #eb6834;
+    --ground: #15181c; --surface: rgba(24, 28, 33, 0.86); --ink: #eef1f3; --ink-2: #b4bcc3; --ink-3: #87919a;
+    --rule: rgba(255, 255, 255, 0.10); --idle: #7d8791; --enroute: #ffb830; --ontrip: #6d95ec; --waiting: #ff7aa8;
+    --late: #ff4d4d; --match: #5fe0b4; --cancel: #ff4d4d; --pressure: #ff7a3d;
     --display: "Barlow Condensed", "Arial Narrow", sans-serif; --body: "Public Sans", "Segoe UI", system-ui, sans-serif;
   }
   html, body { height: 100%; margin: 0; }
   body { background: var(--ground); color: var(--ink); font: 14px/1.45 var(--body); font-variant-numeric: tabular-nums; }
   #map { position: absolute; inset: 0; }
-  .panel {
-    position: absolute; top: 16px; left: 16px; width: min(300px, calc(100% - 32px)); z-index: 2;
-    background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 16px;
-    display: grid; gap: 12px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.12);
+  .bar {
+    position: absolute; top: 12px; left: 12px; right: 12px; z-index: 2;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px 26px;
+    background: var(--surface); border: 1px solid var(--rule); border-radius: 12px; padding: 10px 16px;
+    backdrop-filter: blur(6px); box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
   }
-  .eyebrow { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; }
-  h1 { font: 600 26px/1 var(--display); margin: 2px 0 0; }
-  .run { font-size: 12px; color: var(--ink-3); word-break: break-all; }
-  .clock { font: 600 44px/1 var(--display); }
-  .clock small { font-size: 14px; color: var(--ink-3); font-weight: 500; margin-left: 6px; font-family: var(--body); }
-  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; }
+  .title .eyebrow { font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; }
+  .title h1 { font: 600 22px/1 var(--display); margin: 2px 0 0; letter-spacing: 0.01em; }
+  .clock { font: 600 38px/1 var(--display); }
+  .clock small { font: 500 12px var(--body); color: var(--ink-3); margin-left: 6px; }
+  .stats { display: flex; gap: 22px; }
   .stat b { display: block; font: 600 22px/1.05 var(--display); }
-  .stat span { font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-3); }
-  .legend { display: grid; gap: 5px; font-size: 13px; color: var(--ink-2); }
-  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; vertical-align: -1px;
-              border: 1px solid rgba(21, 25, 28, 0.5); }
-  .ramp { height: 8px; border-radius: 4px; background: linear-gradient(90deg, rgba(235,104,52,0.05), rgba(235,104,52,0.75)); }
-  .ramp-labels { display: flex; justify-content: space-between; font-size: 11px; color: var(--ink-3); }
-  .links { display: flex; gap: 14px; font-size: 13px; }
-  a { color: var(--ink); }
-  .status { font-size: 13px; color: var(--ink-2); }
-  @media (max-width: 520px) { .panel { padding: 10px 12px; gap: 8px; } .clock { font-size: 34px; } }
+  .stat span { font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px 4px 8px; border-radius: 999px;
+    border: 1px solid var(--rule); background: rgba(255, 255, 255, 0.04); color: var(--ink-2);
+    font: 500 12.5px var(--body); cursor: pointer;
+  }
+  .chip:hover { background: rgba(255, 255, 255, 0.09); color: var(--ink); }
+  .chip[aria-pressed="false"] { opacity: 0.4; }
+  .chip[aria-pressed="false"] i { background: transparent !important; }
+  .chip i { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+  .chip i.ring { background: transparent; border: 2px solid var(--waiting); width: 7px; height: 7px; }
+  .chip i.hot { border-radius: 2px; width: 14px; background: linear-gradient(90deg, rgba(255,122,61,0.15), rgba(255,122,61,0.8)); }
+  .foot {
+    position: absolute; left: 12px; bottom: 12px; z-index: 2; display: flex; gap: 14px; align-items: center;
+    font-size: 12px; color: var(--ink-3); background: var(--surface); border: 1px solid var(--rule);
+    border-radius: 8px; padding: 6px 10px;
+  }
+  .foot a { color: var(--ink-2); }
+  .foot .run { max-width: 34ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .maplibregl-ctrl-attrib { background: rgba(21, 24, 28, 0.7) !important; color: var(--ink-3); }
+  .maplibregl-ctrl-attrib a { color: var(--ink-2) !important; }
+  .maplibregl-ctrl-group { background: #232830; }
+  .maplibregl-ctrl-group button + button { border-top-color: rgba(255, 255, 255, 0.1); }
+  .maplibregl-ctrl-group button .maplibregl-ctrl-icon { filter: invert(0.85); }
+  .deck-tooltip { background: #232830 !important; color: var(--ink) !important; font: 12px var(--body) !important; border-radius: 6px; }
+  @media (max-width: 760px) {
+    .bar { gap: 8px 16px; padding: 8px 12px; }
+    .clock { font-size: 30px; } .stats { gap: 14px; } .stat b { font-size: 18px; }
+    .legend { margin-left: 0; flex: 1 1 100%; min-width: 0; } .chip { padding: 3px 8px 3px 7px; font-size: 12px; }
+    .foot .run { display: none; }
+  }
 </style>
 </head>
 <body>
 <div id="map"></div>
-<aside class="panel" aria-live="polite">
-  <div>
+<header class="bar" aria-live="polite">
+  <div class="title">
     <div class="eyebrow">RideSync · live</div>
     <h1>Manhattan dispatch</h1>
-    <div class="run" id="run">Waiting for a run…</div>
   </div>
   <div class="clock" id="clock">--:--<small>simulated</small></div>
   <div class="stats">
-    <div class="stat"><b id="waiting">0</b><span>Waiting now</span></div>
-    <div class="stat"><b id="drivers">0 / 0</b><span>Free / all drivers</span></div>
+    <div class="stat"><b id="waiting">0</b><span>Waiting</span></div>
+    <div class="stat"><b id="drivers">0 / 0</b><span>Free / drivers</span></div>
     <div class="stat"><b id="completed">0</b><span>Trips done</span></div>
     <div class="stat"><b id="cancelled">0</b><span>Cancelled</span></div>
   </div>
-  <div class="legend">
-    <div><i style="background:var(--idle)"></i>Driver, free</div>
-    <div><i style="background:var(--enroute)"></i>Driving to a pickup (line to the rider)</div>
-    <div><i style="background:var(--ontrip)"></i>Carrying a passenger</div>
-    <div><i style="background:var(--waiting); width:12px; height:12px"></i>Rider waiting for a match</div>
-    <div><i style="background:var(--cancel)"></i>Rider cancelled (fades out)</div>
+  <div class="legend" id="legend">
+    <button class="chip" data-layer="waiting" title="Pink turns red as the wait nears the rider's patience"><i class="ring"></i>Rider waiting</button>
+    <button class="chip" data-layer="enroute" title="Line runs to the rider"><i style="background:var(--enroute)"></i>To pickup</button>
+    <button class="chip" data-layer="ontrip" title="Short tail shows the direction"><i style="background:var(--ontrip)"></i>With passenger</button>
+    <button class="chip" data-layer="idle"><i style="background:var(--idle)"></i>Free</button>
+    <button class="chip" data-layer="events" title="Green ripple: matched. Red cross: cancelled"><i style="background:var(--match)"></i>Match / cancel</button>
+    <button class="chip" data-layer="zones" title="Zones with more requests than free drivers in the last closed minute (Flink)"><i class="hot"></i>Short of drivers</button>
   </div>
-  <div>
-    <div class="eyebrow" style="margin-bottom:4px">Zone shading: requests per free driver, last closed minute (Flink)</div>
-    <div class="ramp"></div>
-    <div class="ramp-labels"><span>0</span><span>1.5</span><span>3+</span></div>
-  </div>
-  <div class="links"><a href="__GRAFANA__" target="_blank" rel="noopener">Grafana dashboard</a><a href="http://localhost:8081" target="_blank" rel="noopener">Flink UI</a></div>
-  <div class="status" id="status">Connecting…</div>
-</aside>
+</header>
+<footer class="foot">
+  <span id="status">Connecting…</span>
+  <span class="run" id="run"></span>
+  <a href="__GRAFANA__" target="_blank" rel="noopener">Grafana</a>
+  <a href="http://localhost:8081" target="_blank" rel="noopener">Flink UI</a>
+</footer>
 
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
 <script src="https://unpkg.com/deck.gl@9.0.38/dist.min.js"></script>
 <script>
 (function () {
-  const COLORS = {
-    idle: [139, 148, 156], enroute: [237, 161, 0], ontrip: [74, 58, 167], waiting: [232, 123, 164],
-    cancel: [227, 73, 72], edge: [21, 25, 28, 140], pressure: [235, 104, 52],
+  const C = {
+    idle: [125, 135, 145], enroute: [255, 184, 48], ontrip: [109, 149, 236], waiting: [255, 122, 168],
+    late: [255, 77, 77], land: [44, 50, 58, 120], match: [95, 224, 180], cancel: [255, 77, 77], pressure: [255, 122, 61],
   };
-  const STATE = [COLORS.idle, COLORS.enroute, COLORS.ontrip];
-  const VIEW = { longitude: -73.978, latitude: 40.760, zoom: 11.85, bearing: 29, pitch: 0 };  // Manhattan grid north
+  const PATIENCE_S = 300;   // median rider patience (SimConfig): the wait colour is fully red here
+  const TAIL_S = 2.5;       // wall seconds of tail behind a driver with a passenger
+  const RIPPLE_MS = 1400;
+  const AXIS = 29;          // Manhattan's street grid runs 29 degrees east of north
   const $ = (id) => document.getElementById(id);
   const fmt = new Intl.NumberFormat("en-US");
+  const t0 = performance.now();
+  const now = () => (performance.now() - t0) / 1000;
+
   let zones = null, frame = null, overlay = null, deckgl = null;
+  let tails = new Map();          // driver id -> {state, path: [[lon, lat]], times: [s]}
+  const seenMatches = new Set(), ripples = [];
+  let firstFrame = true;
+  let D = { idle: [], ontrip: [], enroute: [], trips: [], waiting: [], cancels: [] };  // per-frame layer data
+
+  // Layer toggles, remembered per browser.
+  const shown = { waiting: true, enroute: true, ontrip: true, idle: true, events: true, zones: true };
+  try { Object.assign(shown, JSON.parse(localStorage.getItem("ridesync.layers") || "{}")); } catch (e) {}
+  document.querySelectorAll(".chip").forEach((b) => {
+    const key = b.dataset.layer;
+    b.setAttribute("aria-pressed", String(shown[key]));
+    b.onclick = () => {
+      shown[key] = !shown[key];
+      b.setAttribute("aria-pressed", String(shown[key]));
+      try { localStorage.setItem("ridesync.layers", JSON.stringify(shown)); } catch (e) {}
+      derive();
+    };
+  });
+
+  // Wide screens lay the island across the screen, tall ones keep it upright; zoom fits it either way.
+  function camera() {
+    const w = window.innerWidth, h = window.innerHeight, wide = w >= h;
+    const long = wide ? w : h - 90, short = wide ? h - 110 : w;
+    const mpp = Math.max(21500 / (long * 0.92), 4800 / (short * 0.9));   // island ~21.5 x 4.8 km
+    return { longitude: -73.962, latitude: 40.785, zoom: Math.log2(59290 / mpp), bearing: wide ? AXIS - 90 : AXIS, pitch: 0 };
+  }
+
+  function waitColor(waited) {
+    const k = Math.min(Math.max(waited / PATIENCE_S, 0), 1);
+    return C.waiting.map((c, i) => Math.round(c + (C.late[i] - c) * k));
+  }
+
+  // Split the latest frame into what each layer draws; runs 4 times a second, not every animation frame.
+  function derive() {
+    const f = frame || { drivers: [], waiting: [], cancels: [] };
+    const drivers = f.drivers.filter((d) => d[1] !== 0), pick = (on, st) => (on ? drivers.filter((d) => d[3] === st) : []);
+    const trips = [];
+    if (shown.ontrip) tails.forEach((v) => { if (v.state === 2 && v.path.length > 1) trips.push(v); });
+    D = {
+      idle: pick(shown.idle, 0), enroute: pick(shown.enroute, 1), ontrip: pick(shown.ontrip, 2), trips,
+      waiting: shown.waiting ? f.waiting : [], cancels: shown.events ? f.cancels : [],
+    };
+  }
 
   function layers() {
-    const f = frame || { drivers: [], waiting: [], cancels: [], zones: {} };
-    const pressure = f.zones || {};
+    const f = frame || { t: 0, zones: {} };
+    const s = now(), pressure = f.zones || {};
+    const pulse = (id) => ((s * 0.7 + (id % 97) * 0.173) % 1);
     return [
       new deck.GeoJsonLayer({
         id: "zones", data: zones || { type: "FeatureCollection", features: [] },
-        filled: true, stroked: true, lineWidthMinPixels: 0.6, getLineColor: [120, 130, 135, 90],
-        getFillColor: (z) => {
-          const r = pressure[String(z.properties.id)];
-          return r === undefined ? [0, 0, 0, 0] : [...COLORS.pressure, Math.round(12 + Math.min(r / 3, 1) * 180)];
+        filled: true, stroked: true, lineWidthMinPixels: 0.5, getLineColor: [255, 255, 255, 22],
+        getFillColor: (z) => {  // the island stays a shade lighter than the water; short zones glow orange
+          const r = shown.zones ? pressure[String(z.properties.id)] : undefined;
+          if (r === undefined || r <= 1) return C.land;
+          const k = Math.min((r - 1) / 2, 1);
+          return C.land.map((c, i) => Math.round(c + ((i < 3 ? C.pressure[i] : 150) - c) * (0.25 + 0.6 * k)));
         },
-        updateTriggers: { getFillColor: [f.t] }, pickable: true,
+        updateTriggers: { getFillColor: [f.t, shown.zones] }, pickable: true,
+      }),
+      new deck.ScatterplotLayer({
+        id: "idle", data: D.idle, getPosition: (d) => [d[2], d[1]],
+        radiusUnits: "pixels", getRadius: 1.8, getFillColor: [...C.idle, 130],
+      }),
+      new deck.TripsLayer({
+        id: "tails", data: D.trips, getPath: (v) => v.path, getTimestamps: (v) => v.times,
+        getColor: C.ontrip, opacity: 0.55, widthUnits: "pixels", getWidth: 2, capRounded: true, jointRounded: true,
+        fadeTrail: true, trailLength: TAIL_S, currentTime: s,
+      }),
+      new deck.ScatterplotLayer({
+        id: "ontrip", data: D.ontrip, getPosition: (d) => [d[2], d[1]],
+        radiusUnits: "pixels", getRadius: 2.4, getFillColor: [...C.ontrip, 200],
       }),
       new deck.LineLayer({
-        id: "to-pickup", data: f.drivers.filter((d) => d[3] === 1 && d[4] !== null),
+        id: "to-pickup", data: D.enroute.filter((d) => d[4] !== null),
         getSourcePosition: (d) => [d[2], d[1]], getTargetPosition: (d) => [d[5], d[4]],
-        getColor: [...COLORS.enroute, 210], getWidth: 1.5, widthUnits: "pixels",
+        getColor: [...C.enroute, 170], getWidth: 1.4, widthUnits: "pixels",
       }),
       new deck.ScatterplotLayer({
-        id: "cancels", data: f.cancels, getPosition: (c) => [c[1], c[0]], radiusUnits: "pixels", getRadius: 5,
-        getFillColor: (c) => [...COLORS.cancel, Math.round(255 * (1 - c[2]))], updateTriggers: { getFillColor: [f.t] },
+        id: "enroute", data: D.enroute, getPosition: (d) => [d[2], d[1]],
+        radiusUnits: "pixels", getRadius: 3.4, getFillColor: C.enroute,
       }),
       new deck.ScatterplotLayer({
-        id: "waiting", data: f.waiting, getPosition: (w) => [w[1], w[0]], radiusUnits: "pixels", getRadius: 6,
-        getFillColor: COLORS.waiting, stroked: true, getLineColor: COLORS.edge, lineWidthUnits: "pixels", getLineWidth: 1,
+        id: "waiting-pulse", data: D.waiting, getPosition: (w) => [w[2], w[1]],
+        radiusUnits: "pixels", getRadius: (w) => 4 + 9 * pulse(w[0]), filled: false, stroked: true,
+        lineWidthUnits: "pixels", getLineWidth: 1.5,
+        getLineColor: (w) => [...waitColor(f.t - w[3]), Math.round(200 * (1 - pulse(w[0])))],
+        updateTriggers: { getRadius: [s], getLineColor: [s] },
       }),
       new deck.ScatterplotLayer({
-        id: "drivers", data: f.drivers.filter((d) => d[1] !== 0), getPosition: (d) => [d[2], d[1]],
-        radiusUnits: "pixels", getRadius: (d) => (d[3] === 0 ? 3 : 4), getFillColor: (d) => STATE[d[3]],
-        stroked: true, getLineColor: COLORS.edge, lineWidthUnits: "pixels", getLineWidth: 0.8,
-        updateTriggers: { getFillColor: [f.t], getRadius: [f.t] },
+        id: "waiting", data: D.waiting, getPosition: (w) => [w[2], w[1]],
+        radiusUnits: "pixels", getRadius: 4, getFillColor: (w) => waitColor(f.t - w[3]),
+        updateTriggers: { getFillColor: [f.t] },
+      }),
+      new deck.ScatterplotLayer({
+        id: "ripples", data: shown.events ? ripples : [], getPosition: (r) => r.pos,
+        radiusUnits: "pixels", filled: false, stroked: true, lineWidthUnits: "pixels", getLineWidth: 2,
+        getRadius: (r) => 4 + 20 * Math.min((performance.now() - r.start) / RIPPLE_MS, 1),
+        getLineColor: (r) => [...C.match, Math.round(230 * (1 - Math.min((performance.now() - r.start) / RIPPLE_MS, 1)))],
+        updateTriggers: { getRadius: [s], getLineColor: [s] },
+      }),
+      new deck.TextLayer({
+        id: "cancels", data: D.cancels, getPosition: (c) => [c[1], c[0]], getText: () => "×",
+        characterSet: ["×"], fontFamily: "Public Sans, Segoe UI, sans-serif", fontWeight: 600, getSize: 18,
+        getColor: (c) => [...C.cancel, Math.round(255 * (1 - c[2]))], updateTriggers: { getColor: [f.t] },
       }),
     ];
   }
@@ -123,23 +222,32 @@
     layer && layer.id === "zones" && object ? `${object.properties.name}` : null;
 
   function render() {
+    for (let i = ripples.length - 1; i >= 0; i--) if (performance.now() - ripples[i].start > RIPPLE_MS) ripples.splice(i, 1);
     if (overlay) overlay.setProps({ layers: layers() });
     else if (deckgl) deckgl.setProps({ layers: layers() });
+    requestAnimationFrame(render);
   }
 
   function start() {
+    const view = camera();
     try {
       const map = new maplibregl.Map({
-        container: "map", style: "https://tiles.openfreemap.org/styles/positron",
-        center: [VIEW.longitude, VIEW.latitude], zoom: VIEW.zoom, bearing: VIEW.bearing, attributionControl: { compact: true },
+        container: "map", style: "https://tiles.openfreemap.org/styles/dark",
+        center: [view.longitude, view.latitude], zoom: view.zoom, bearing: view.bearing, attributionControl: { compact: true },
+      });
+      map.on("load", () => {  // street names and one-way arrows are noise at this zoom
+        for (const l of map.getStyle().layers) {
+          if (/^(highway_name|road_oneway)/.test(l.id)) map.setLayoutProperty(l.id, "visibility", "none");
+        }
       });
       overlay = new deck.MapboxOverlay({ interleaved: false, layers: layers(), getTooltip: tooltip });
       map.addControl(overlay);
-      map.addControl(new maplibregl.NavigationControl({ visualizePitch: false }), "top-right");
+      map.addControl(new maplibregl.NavigationControl({ visualizePitch: false }), "bottom-right");
     } catch (e) {
       // No basemap (offline): deck.gl alone, the taxi zones are the map.
-      deckgl = new deck.Deck({ parent: $("map"), initialViewState: VIEW, controller: true, layers: layers(), getTooltip: tooltip });
+      deckgl = new deck.Deck({ parent: $("map"), initialViewState: view, controller: true, layers: layers(), getTooltip: tooltip });
     }
+    requestAnimationFrame(render);
   }
 
   function clock(t) {
@@ -147,13 +255,43 @@
     return `${String(Math.floor(s / 3600) % 24).padStart(2, "0")}:${String(Math.floor(s / 60) % 60).padStart(2, "0")}`;
   }
 
+  // Keep the last few positions of each driver; a state change starts a fresh tail.
+  function track(drivers) {
+    const s = now(), next = new Map();
+    for (const d of drivers) {
+      if (d[1] === 0) continue;
+      let v = tails.get(d[0]);
+      if (!v || v.state !== d[3]) v = { state: d[3], path: [], times: [] };
+      const last = v.path[v.path.length - 1];
+      if (!last || last[0] !== d[2] || last[1] !== d[1]) { v.path.push([d[2], d[1]]); v.times.push(s); }
+      while (v.times.length > 2 && s - v.times[1] > TAIL_S) { v.path.shift(); v.times.shift(); }
+      next.set(d[0], v);
+    }
+    tails = next;
+  }
+
+  function newMatches(matches) {
+    for (const m of matches || []) {
+      if (seenMatches.has(m[0])) continue;
+      seenMatches.add(m[0]);
+      if (!firstFrame) ripples.push({ pos: [m[2], m[1]], start: performance.now() });  // no burst on (re)connect
+    }
+    if (seenMatches.size > 5000) seenMatches.clear();
+    firstFrame = false;
+  }
+
   function connect() {
-    const ws = new WebSocket(`ws://${location.host}/ws`);
-    ws.onopen = () => ($("status").textContent = "Connected. Updates 4 times a second.");
+    const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+    ws.onopen = () => { $("status").textContent = "Live"; firstFrame = true; };
     ws.onclose = () => { $("status").textContent = "Disconnected. Retrying…"; setTimeout(connect, 1500); };
     ws.onmessage = (e) => {
-      frame = JSON.parse(e.data);
-      if (!frame.run) { $("run").textContent = "Waiting for a run… start one with python -m ridesync.live.sim"; return; }
+      const next = JSON.parse(e.data);
+      if (!next.run) { frame = null; derive(); $("run").textContent = "Waiting for a run: python -m ridesync.live.sim"; return; }
+      if (frame && frame.run !== next.run) { tails.clear(); seenMatches.clear(); firstFrame = true; }
+      frame = next;
+      track(frame.drivers);
+      newMatches(frame.matches);
+      derive();
       $("run").textContent = `Run ${frame.run}${frame.ended ? " (finished)" : ""}`;
       $("clock").innerHTML = `${clock(frame.t)}<small>simulated</small>`;
       const free = frame.drivers.filter((d) => d[3] === 0).length;
@@ -161,11 +299,10 @@
       $("drivers").textContent = `${fmt.format(free)} / ${fmt.format(frame.drivers.length)}`;
       $("completed").textContent = fmt.format(frame.counts.completed);
       $("cancelled").textContent = fmt.format(frame.counts.cancelled);
-      render();
     };
   }
 
-  fetch("/zones.geojson").then((r) => r.json()).then((g) => { zones = g; render(); });
+  fetch("/zones.geojson").then((r) => r.json()).then((g) => { zones = g; });
   start();
   connect();
 })();
