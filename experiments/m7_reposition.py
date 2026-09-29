@@ -1,10 +1,10 @@
 """M7: moving idle drivers toward demand. Stay put vs drift to usual hot spots vs a coordinated plan.
 
     python -m ridesync.ml.train demand                 # drift and the forecast arm need data/models/demand.joblib
-    python -m ridesync.data.tlc --date 2024-03-27      # a test day of the demand model (days 22-31)
+    python -m ridesync.data.tlc --date 2026-07-22      # a test day of the demand model (July 2026)
     python experiments/m7_reposition.py [--fleets 300 400 500] [--seeds 6] [--workers 4]
 
-Demand is Wednesday 2024-03-27, 17:00-20:00: a test day, so neither the forecast nor drift's "usual" map
+Demand is Wednesday 2026-07-22, 17:00-20:00: a test day, so neither the forecast nor drift's "usual" map
 (training days 1-21) has seen it. Dispatch is the best M2 arm (optimal every 30 s, cancellation-aware)
 on the calibrated straight-line model with per-trip noise, and riders give up on late drivers
 (``riders.enroute_cancel``, median tolerance 3 min), so shorter pickups can show up as fewer cancellations.
@@ -25,13 +25,14 @@ from pathlib import Path
 
 import pandas as pd
 
+from ridesync.data.slices import run_start_and_frac
 from ridesync.experiments import Arm, paired_summary, run_grid
 from ridesync.matching import CancelBelief, CostParams
 from ridesync.routing import travel_from_calibration
 from ridesync.sim import SimConfig
 
 RESULTS = Path(__file__).parent / "results"
-DEFAULT_SLICE = "data/processed/trips_2024-03-27_1700_3h_manhattan_f0.1.parquet"
+DEFAULT_SLICE = "data/processed/trips_2026-07-22_1700_3h_manhattan_f0.1.parquet"
 AWARE = CostParams(trip_value_s=900.0, cancel=CancelBelief())
 # Real drives vary around the quote: per-trip lognormal noise, the ETA model's robust test residual (M6).
 # Quotes come from the noise-free matrix, so drivers are sometimes late and riders can give up on them.
@@ -85,6 +86,7 @@ def main():
     ap.add_argument("--fleets", type=int, nargs="+", default=[300, 400, 500])
     ap.add_argument("--seeds", type=int, default=6)
     ap.add_argument("--workers", type=int, default=None)
+    ap.add_argument("--tag", default=None, help="output file prefix under experiments/results (default: m7_reposition)")
     args = ap.parse_args()
 
     base = SimConfig(travel=travel_from_calibration("straight")).with_(**{
@@ -106,16 +108,18 @@ def main():
     for d in (df, cap):
         d["empty_frac"] = d["driver_enroute_frac"] + d["driver_reposition_frac"]
     RESULTS.mkdir(exist_ok=True)
-    df.to_csv(RESULTS / "m7_reposition_runs.csv", index=False)
-    cap.to_csv(RESULTS / "m7_reposition_cap_runs.csv", index=False)
+    tag = args.tag or "m7_reposition"
+    df.to_csv(RESULTS / f"{tag}_runs.csv", index=False)
+    cap.to_csv(RESULTS / f"{tag}_cap_runs.csv", index=False)
 
     vs_none = paired_summary(df, "none", METRICS, [FLEET])
     vs_drift = paired_summary(df[df["arm"] != "none"], "drift", METRICS, [FLEET])
-    vs_none.to_csv(RESULTS / "m7_reposition_summary.csv", index=False)
+    vs_none.to_csv(RESULTS / f"{tag}_summary.csv", index=False)
     cap_s = paired_summary(cap, "planned_forecast", METRICS, [FLEET])
 
     p = base.reposition
-    lines = ["# M7: repositioning idle drivers (Manhattan TLC replay, 2024-03-27 17:00-20:00)", "",
+    start, _ = run_start_and_frac(base.demand)
+    lines = [f"# M7: repositioning idle drivers (Manhattan TLC replay, {start:%Y-%m-%d %H:%M}, 3 h)", "",
              f"Optimal @30 s, cancellation-aware, straight-line travel with per-trip noise (sigma {NOISE}); "
              f"riders give up on late drivers "
              f"(median tolerance {base.riders.lateness_tolerance_median_s:.0f} s). Every {p.interval_s:.0f} s the policy "
@@ -128,7 +132,7 @@ def main():
     lines += [f"## Move cap: 5 vs 10 minutes, {mid} drivers (against `planned_forecast`, 10 min)", ""]
     lines += _table(cap_s, mid, "planned_forecast") + [""]
     text = "\n".join(lines) + "\n"
-    (RESULTS / "m7_reposition_report.md").write_text(text, encoding="utf-8")
+    (RESULTS / f"{tag}_report.md").write_text(text, encoding="utf-8")
     print(text)
 
 

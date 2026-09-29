@@ -250,8 +250,10 @@
     requestAnimationFrame(render);
   }
 
-  function clock(t) {
-    const s = 17 * 3600 + Math.floor(t);
+  // The run's start ("2026-07-15T17:00:00") plus simulated seconds; without a start, time since t = 0.
+  function clock(t, start) {
+    const m = /T(\d{2}):(\d{2})/.exec(start || "");
+    const s = (m ? Number(m[1]) * 3600 + Number(m[2]) * 60 : 0) + Math.floor(t);
     return `${String(Math.floor(s / 3600) % 24).padStart(2, "0")}:${String(Math.floor(s / 60) % 60).padStart(2, "0")}`;
   }
 
@@ -293,7 +295,9 @@
       newMatches(frame.matches);
       derive();
       $("run").textContent = `Run ${frame.run}${frame.ended ? " (finished)" : ""}`;
-      $("clock").innerHTML = `${clock(frame.t)}<small>simulated</small>`;
+      const day = frame.start ? new Date(frame.start.slice(0, 10) + "T12:00:00").toLocaleDateString("en-US",
+        { weekday: "short", day: "numeric", month: "short", year: "numeric" }) : "simulated";
+      $("clock").innerHTML = `${clock(frame.t, frame.start)}<small>${day}</small>`;
       const free = frame.drivers.filter((d) => d[3] === 0).length;
       $("waiting").textContent = fmt.format(frame.waiting.length);
       $("drivers").textContent = `${fmt.format(free)} / ${fmt.format(frame.drivers.length)}`;

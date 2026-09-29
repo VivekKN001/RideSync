@@ -16,13 +16,13 @@ import sys
 import time
 from pathlib import Path
 
+from ridesync.data.slices import DEFAULT_SLICE
 from ridesync.experiments import Arm, paired_summary, run_grid
 from ridesync.matching import CancelBelief, CostParams
 from ridesync.routing import travel_from_calibration
 from ridesync.sim import SimConfig
 
 RESULTS = Path(__file__).parent / "results"
-DEFAULT_SLICE = "data/processed/trips_2024-03-13_1700_3h_manhattan_f0.1.parquet"
 AWARE = CostParams(trip_value_s=900.0, cancel=CancelBelief())
 METRICS = [
     "app_opens", "served_rate", "priced_out_rate", "retried_rate", "cancel_rate", "wait_all_mean_s",
@@ -76,6 +76,7 @@ def main():
     ap.add_argument("--elasticities", type=float, nargs="+", default=[0.3, 0.5, 0.8])
     ap.add_argument("--seeds", type=int, default=6)
     ap.add_argument("--workers", type=int, default=None)
+    ap.add_argument("--tag", default=None, help="output file prefix under experiments/results (default: m6_surge)")
     ap.add_argument("--no-forecast", action="store_true", help="skip the forecast arm (no demand model yet)")
     args = ap.parse_args()
 
@@ -106,11 +107,12 @@ def main():
     df = run_grid(base, arms, {FLEET: args.fleets, ELAST: args.elasticities}, range(args.seeds), workers=args.workers)
     print(f"{len(df)} runs in {time.time() - t0:.0f}s")
     RESULTS.mkdir(exist_ok=True)
-    df.to_csv(RESULTS / "m6_surge_runs.csv", index=False)
+    tag = args.tag or "m6_surge"
+    df.to_csv(RESULTS / f"{tag}_runs.csv", index=False)
     s = paired_summary(df, "no_surge", METRICS, [FLEET, ELAST])
-    s.to_csv(RESULTS / "m6_surge_summary.csv", index=False)
+    s.to_csv(RESULTS / f"{tag}_summary.csv", index=False)
     text = report(s, notes)
-    (RESULTS / "m6_surge_report.md").write_text(text, encoding="utf-8")
+    (RESULTS / f"{tag}_report.md").write_text(text, encoding="utf-8")
     print(text)
 
 

@@ -5,8 +5,10 @@
 TLC fares already include Uber's and Lyft's own surge, so the fit uses weekday late mornings and
 early afternoons (10:00-15:59), when surge is rarest, and a median (quantile) regression, which the
 few surged trips left barely move. ``road_factor`` turns straight-line distance into trip miles; it
-is fitted on the same zone points the ETA model uses. Fitted on the training days, evaluated on the
-test days (``common.TRAIN_DAYS``); Uber and Lyft also get fits of their own for comparison.
+is fitted on the same zone points the ETA model uses. Prices drift, so the fit uses only the last
+``fit_months`` of the training period (``data/monthly`` fare samples) and is tested on the test
+period; Uber and Lyft also get fits of their own for comparison. Fees, including NYC's congestion
+pricing charge (``cbd_congestion_fee``, from January 2025), are reported over the test period.
 """
 from __future__ import annotations
 
@@ -28,7 +30,7 @@ def fare_from_file(path: str = FARE_PATH) -> FareConfig:
 
 
 COMPANIES = {"HV0003": "Uber", "HV0005": "Lyft"}
-FEES = ["tolls", "bcf", "sales_tax", "congestion_surcharge"]
+FEES = ["tolls", "bcf", "sales_tax", "congestion_surcharge", "cbd_congestion_fee"]
 
 
 def _fit_quantile(miles: np.ndarray, minutes: np.ndarray, y: np.ndarray):
@@ -47,20 +49,42 @@ def _errors(y: np.ndarray, pred: np.ndarray) -> dict:
             "p90_ape": float(np.percentile(ape, 90)), "bias": float(np.mean(pred - y)), "n": int(len(y))}
 
 
-def train(month: str = "2024-03", n: int = 30000, seed: int = 0) -> dict:
-    """Fit on calm hours of the training days, overall (the simulator's fares) and per company; evaluate
-    on the test days. Writes ``FARE_PATH`` and returns the fit with an ``evaluation`` table and ``fees``."""
+def fee_summary(months, root=None) -> dict:
+    """Mean fees per valid trip over whole months, from the exact sums in each month's ``fees.json``."""
+    from .common import MONTHLY
+
+    root = root or MONTHLY
+    tot: dict = {}
+    for m in months:
+        for k, v in json.loads((root / m / "fees.json").read_text()).items():
+            tot[k] = tot.get(k, 0) + v
+    n = max(tot.get("trips", 0), 1)
+    out = {f: tot.get(f"{f}_sum", 0.0) / n for f in FEES}
+    out["fees_share_of_fare"] = sum(tot.get(f"{f}_sum", 0.0) for f in FEES) / max(tot.get("fare_sum", 0.0), 1e-9)
+    out["cbd_charged_share"] = tot.get("cbd_congestion_fee_charged", 0) / n
+    out["trips"] = int(tot.get("trips", 0))
+    return out
+
+
+def train(train_spec: str = "2025-01:2026-06", test_spec: str = "2026-07", fit_months: int = 3, n: int = 30000,
+          seed: int = 0) -> dict:
+    """Fit on calm hours of the last ``fit_months`` of training, overall (the simulator's fares) and per company;
+    evaluate on the test period. Writes ``FARE_PATH`` and returns the fit with an ``evaluation`` table and ``fees``."""
     from ..geo import haversine_pairs_m
-    from .common import is_train_day, read_service_trips, service_zones
+    from .common import Period, load_table, service_zones, split
     from .eta import zone_points
 
+    tr, te = split(train_spec, test_spec)
+    fit_period = Period.parse(":".join([tr.months()[-min(fit_months, len(tr.months()))], tr.months()[-1]]))
+    fit_period = Period(max(fit_period.start, tr.start), tr.end)
     zones = service_zones()
-    df = read_service_trips(month, ["hvfhs_license_num", "request_datetime", "PULocationID", "DOLocationID",
-                                    "trip_miles", "trip_time", "base_passenger_fare", *FEES], zones)
+    df = load_table(fit_period.months() + te.months(), "fare")
+    t = df["request_datetime"]
+    df = df[fit_period.mask(t) | te.mask(t)].reset_index(drop=True)
     t = df["request_datetime"]
     calm = (t.dt.weekday < 5) & (t.dt.hour >= 10) & (t.dt.hour < 16)
     valid = (df["base_passenger_fare"] > 0) & (df["trip_miles"] > 0.1) & (df["trip_time"] > 60)
-    train_day = is_train_day(t, month)
+    train_day = fit_period.mask(t)
     rng = np.random.default_rng(seed)
 
     def sample(mask, k=n):
@@ -105,15 +129,15 @@ def train(month: str = "2024-03", n: int = 30000, seed: int = 0) -> dict:
     straight = haversine_pairs_m(pu, do)
     road_factor = float(np.median(d["trip_miles"].to_numpy() * 1609.344 / np.maximum(straight, 50.0)))
 
-    # What riders pay on top of the fare. Taxes and fees are not platform revenue, so the simulator's
-    # revenue stays fare x multiplier; these are for the report.
-    ok = df[valid]
-    fees = {f: float(ok[f].mean()) for f in FEES}
-    fees["rider_total_median"] = float((ok["base_passenger_fare"] + ok[FEES].sum(axis=1)).median())
-    fees["fees_share_of_fare"] = float(ok[FEES].sum(axis=1).sum() / ok["base_passenger_fare"].sum())
+    # What riders pay on top of the fare, over the test period. Taxes and fees are not platform revenue,
+    # so the simulator's revenue stays fare x multiplier; these are for the report.
+    fees = fee_summary(te.months())
+    ok = df[valid & ~train_day]
+    fees["rider_total_median"] = float((ok["base_passenger_fare"] + ok[FEES].fillna(0.0).sum(axis=1)).median())
 
     out = {**fit, "road_factor": road_factor, "n": int(len(d)), "median_fare": median_fare,
            "mae": rows[1]["mae"], "all_hours_median_fare": float(ok["base_passenger_fare"].median()),
+           "fit_period": str(fit_period), "test": str(te),
            "companies": companies, "fees": fees, "evaluation": rows}
     Path(FARE_PATH).parent.mkdir(parents=True, exist_ok=True)
     Path(FARE_PATH).write_text(json.dumps(out, indent=2))

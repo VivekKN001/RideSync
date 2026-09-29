@@ -5,20 +5,22 @@ slices, at full scale (not sampled). For a target bucket ``b`` forecast ``k`` bu
 last bucket we know is ``s = b - k``. Features:
 
 - ``lag1..lag4``: counts of buckets s, s-1, s-2, s-3, and their mean
-- ``yday``, ``lweek``: the same bucket one day and one week before the target
-- ``zone`` (categorical), ``tod`` (bucket of the day), ``dow``
+- ``yday``, ``lweek``, ``lyear``: the same bucket one day, one week and 52 weeks before the target
+- ``zone`` (categorical), ``tod`` (bucket of the day), ``dow``, ``month``, ``holiday`` (US federal)
 
 Nothing at or after ``s + 1`` is read, which ``test_m6`` checks by blanking the future. The model is
 a gradient-boosted tree ensemble with Poisson loss, one per horizon (15, 30 and 60 minutes ahead).
 
-In a simulation, the history before t = 0 is the real month; buckets from t = 0 on come from what
+Since M8 the counts span many months (``data/monthly``); the model trains on one period and is tested
+on a later one (``ridesync.ml.common.split``). In a simulation, the history before t = 0 is real; buckets from t = 0 on come from what
 the simulation has seen so far (scaled back up by the sample fraction), and the bucket in progress
 and everything after it are unknown.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -27,8 +29,9 @@ import numpy as np
 BUCKET_S = 900.0
 PER_DAY = 96
 PER_WEEK = 7 * PER_DAY
+PER_YEAR = 52 * PER_WEEK  # 364 days: the same weekday a year before
 HORIZONS = (1, 2, 4)
-FEATURES = ["lag1", "lag2", "lag3", "lag4", "mean4", "yday", "lweek", "zone", "tod", "dow"]
+FEATURES = ["lag1", "lag2", "lag3", "lag4", "mean4", "yday", "lweek", "lyear", "zone", "tod", "dow", "month", "holiday"]
 ZONE_COL = FEATURES.index("zone")
 MODEL_PATH = "data/models/demand.joblib"
 
@@ -49,10 +52,22 @@ def _take(C: np.ndarray, b: np.ndarray) -> np.ndarray:
     return out
 
 
-def features(C: np.ndarray, targets: np.ndarray, k: int, origin_dow: int) -> np.ndarray:
+@lru_cache(maxsize=8)
+def _calendar(origin: date, n_days: int) -> np.ndarray:
+    """(n_days, 2): month and US federal holiday flag of each day from ``origin``."""
+    import pandas as pd
+    from pandas.tseries.holiday import USFederalHolidayCalendar
+
+    days = pd.date_range(origin, periods=n_days, freq="D")
+    hol = USFederalHolidayCalendar().holidays(days[0], days[-1])
+    return np.column_stack([days.month.to_numpy(float), days.isin(hol).astype(float)])
+
+
+def features(C: np.ndarray, targets: np.ndarray, k: int, origin_dow: int, origin: Optional[date] = None) -> np.ndarray:
     """Feature rows for every zone and target bucket, zone-major: row z * len(targets) + j.
 
-    Reads only buckets <= targets - k (plus the day/week-before buckets, which are older for k <= 96).
+    Reads only buckets <= targets - k (plus the day/week/year-before buckets, which are older for
+    k <= 96). ``origin`` (the date of bucket 0) gives month and holiday; without it they are NaN.
     """
     targets = np.asarray(targets, dtype=int)
     s = targets - k
@@ -61,11 +76,18 @@ def features(C: np.ndarray, targets: np.ndarray, k: int, origin_dow: int) -> np.
     with np.errstate(invalid="ignore"):
         mean4 = np.where(n_known > 0, np.nansum(lags, axis=-1) / np.maximum(n_known, 1), np.nan)
     Z, n = C.shape[0], len(targets)
+    day = targets // PER_DAY
+    if origin is not None and n:
+        cal = _calendar(date(origin.year, origin.month, origin.day), int(max(day.max(), 0)) + 1)
+        month, holiday = cal[np.maximum(day, 0), 0], cal[np.maximum(day, 0), 1]
+    else:
+        month = holiday = np.full(n, np.nan)
     cols = [lags[..., 0], lags[..., 1], lags[..., 2], lags[..., 3], mean4,
-            _take(C, targets - PER_DAY), _take(C, targets - PER_WEEK),
+            _take(C, targets - PER_DAY), _take(C, targets - PER_WEEK), _take(C, targets - PER_YEAR),
             np.repeat(np.arange(Z, dtype=float)[:, None], n, axis=1),
             np.broadcast_to((targets % PER_DAY).astype(float), (Z, n)),
-            np.broadcast_to(((origin_dow + targets // PER_DAY) % 7).astype(float), (Z, n))]
+            np.broadcast_to(((origin_dow + day) % 7).astype(float), (Z, n)),
+            np.broadcast_to(month, (Z, n)), np.broadcast_to(holiday, (Z, n))]
     return np.stack(cols, axis=-1).reshape(Z * n, len(FEATURES))
 
 
@@ -121,8 +143,8 @@ class DemandForecaster:
         for b, row in observed.items():
             if 0 <= b < min(b0, C.shape[1]):
                 C[:, b] = row
-        p0 = self.models[1].predict(features(C, np.array([b0]), 1, self.origin_dow))
-        p1 = self.models[2].predict(features(C, np.array([b0 + 1]), 2, self.origin_dow))
+        p0 = self.models[1].predict(features(C, np.array([b0]), 1, self.origin_dow, self._origin))
+        p1 = self.models[2].predict(features(C, np.array([b0 + 1]), 2, self.origin_dow, self._origin))
         return np.maximum(p0, 0.0), np.maximum(p1, 0.0)
 
     def expected(self, now: datetime, horizon_s: float, observed: Mapping[int, np.ndarray]) -> np.ndarray:
@@ -140,13 +162,16 @@ class DemandForecaster:
         import joblib
 
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        joblib.dump({"models": self.models, "zones": self.zones, "origin": self.origin, "counts": self.counts}, path)
+        joblib.dump({"models": self.models, "zones": self.zones, "origin": self.origin, "counts": self.counts,
+                     "features": FEATURES}, path)
 
     @classmethod
     def load(cls, path: str = MODEL_PATH) -> "DemandForecaster":
         import joblib
 
         d = joblib.load(path)
+        if d.get("features") != FEATURES:
+            raise ValueError(f"{path} was trained with other features: retrain with `python -m ridesync.ml.train demand`")
         return cls(d["models"], d["zones"], d["origin"], d["counts"])
 
 
@@ -159,50 +184,83 @@ def make_regressor(max_iter: int = 300):
     )
 
 
-def fit_and_evaluate(C: np.ndarray, zones: Sequence[int], origin: datetime, train_days: int,
-                     horizons: Sequence[int] = HORIZONS, max_iter: int = 300) -> Tuple[DemandForecaster, List[dict]]:
-    """Train one model per horizon on the first ``train_days`` days, evaluate on the rest against baselines."""
-    B = C.shape[1]
-    dow0 = origin.weekday()
-    train_b = np.arange(0, train_days * PER_DAY)
-    test_b = np.arange(train_days * PER_DAY, B)
-    y_te = C[:, test_b].reshape(-1)
-    base_hist = hist_mean(C, test_b, train_b, dow0)
-    models, rows = {}, []
+def fit(C: np.ndarray, origin: datetime, train_b: np.ndarray, horizons: Sequence[int] = HORIZONS,
+        max_iter: int = 300) -> Dict[int, object]:
+    """One model per horizon, trained on the buckets ``train_b``."""
+    models = {}
     for k in horizons:
-        X_tr = features(C, train_b, k, dow0)
-        model = make_regressor(max_iter).fit(X_tr, C[:, train_b].reshape(-1))
-        models[k] = model
-        X_te = features(C, test_b, k, dow0)
-        preds = {
-            "model (GBT, Poisson)": model.predict(X_te),
-            "last value": X_te[:, FEATURES.index("lag1")],
-            "same time last week": X_te[:, FEATURES.index("lweek")],
-            "zone x weekday x time mean": base_hist,
-        }
+        X = features(C, train_b, k, origin.weekday(), origin).astype(np.float32)
+        X[:, np.isnan(X).all(axis=0)] = 0.0  # e.g. no year before the data: a constant column the trees ignore
+        models[k] = make_regressor(max_iter).fit(X, C[:, train_b].reshape(-1))
+        del X
+    return models
+
+
+def evaluate(models: Mapping[int, object], C: np.ndarray, origin: datetime, train_b: np.ndarray,
+             test_b: np.ndarray, baselines: bool = True, label: str = "model (GBT, Poisson)") -> List[dict]:
+    """WAPE and MAE on the buckets ``test_b``, with the baselines (``train_b`` feeds the historical mean)."""
+    y = C[:, test_b].reshape(-1)
+    base_hist = hist_mean(C, test_b, train_b, origin.weekday()) if baselines else None
+    rows = []
+    for k, model in sorted(models.items()):
+        X = features(C, test_b, k, origin.weekday(), origin)
+        preds = {label: model.predict(X.astype(np.float32))}
+        if baselines:
+            preds.update({"last value": X[:, FEATURES.index("lag1")],
+                          "same time last week": X[:, FEATURES.index("lweek")],
+                          "same time last year (52 weeks)": X[:, FEATURES.index("lyear")],
+                          "zone x weekday x time mean": base_hist})
         for name, p in preds.items():
-            rows.append({"horizon_min": int(k * BUCKET_S / 60), "method": name, "wape": wape(y_te, p), "mae": mae(y_te, p)})
-    fc = DemandForecaster(models, list(map(int, zones)), origin.isoformat(), C)
-    return fc, rows
+            rows.append({"horizon_min": int(k * BUCKET_S / 60), "method": name, "wape": wape(y, p), "mae": mae(y, p)})
+    return rows
 
 
-def train(month: str = "2024-03", max_iter: int = 300) -> Tuple[DemandForecaster, List[dict], dict]:
-    """Count the month, fit, evaluate. Returns (forecaster, evaluation rows, data summary)."""
+def fit_and_evaluate(C: np.ndarray, zones: Sequence[int], origin: datetime, train_b: np.ndarray, test_b: np.ndarray,
+                     horizons: Sequence[int] = HORIZONS, max_iter: int = 300) -> Tuple[DemandForecaster, List[dict]]:
+    """Train one model per horizon on ``train_b``, evaluate on ``test_b`` against baselines."""
+    models = fit(C, origin, np.asarray(train_b), horizons, max_iter)
+    rows = evaluate(models, C, origin, np.asarray(train_b), np.asarray(test_b))
+    return DemandForecaster(models, list(map(int, zones)), origin.isoformat(), C), rows
+
+
+def buckets_of(period, origin) -> np.ndarray:
+    """Bucket numbers of a ``common.Period`` counted from ``origin``."""
+    a = int((period.start - origin).total_seconds() // BUCKET_S)
+    b = int((period.end - origin).total_seconds() // BUCKET_S)
+    return np.arange(a, b)
+
+
+def history_counts(first_month: str, last_month: str, zones: Sequence[int], lookback_months: int = 12):
+    """Counts from up to ``lookback_months`` before ``first_month`` (as far back as months are reduced, for
+    the year-before feature) through ``last_month``: (C, origin Timestamp)."""
     import pandas as pd
 
-    from .common import TRAIN_DAYS, month_start, read_service_trips, service_zones
+    from .common import MONTHLY, Period, load_counts
 
+    months = Period.parse(f"{first_month}:{last_month}").months()
+    m = pd.Period(first_month, "M")
+    for _ in range(lookback_months):
+        m -= 1
+        if not (MONTHLY / str(m) / "meta.json").exists():
+            break
+        months.insert(0, str(m))
+    return load_counts(months, zones)
+
+
+def train(train_spec: str, test_spec: str, max_iter: int = 300) -> Tuple[DemandForecaster, List[dict], dict]:
+    """Load the monthly counts, fit on the training period, evaluate on the test period.
+    Returns (forecaster, evaluation rows, data summary)."""
+    from .common import service_zones, split
+
+    tr, te = split(train_spec, test_spec)
     zones = service_zones()
-    df = read_service_trips(month, ["request_datetime", "PULocationID"], zones)
-    origin = month_start(month)
-    n_buckets = origin.days_in_month * PER_DAY
-    bucket = ((df["request_datetime"] - origin).dt.total_seconds() // BUCKET_S).to_numpy().astype(int)
-    row = pd.Series(range(len(zones)), index=zones)
-    zidx = df["PULocationID"].map(row).fillna(-1).to_numpy().astype(int)
-    C = count_matrix(bucket, zidx, len(zones), n_buckets)
-    fc, rows = fit_and_evaluate(C, zones, origin.to_pydatetime(), TRAIN_DAYS, max_iter=max_iter)
-    summary = {"requests": int(C.sum()), "zones": len(zones), "buckets": n_buckets,
-               "mean_per_zone_bucket": float(C.mean()), "test_mean_per_zone_bucket": float(C[:, TRAIN_DAYS * PER_DAY:].mean())}
+    C, origin = history_counts(tr.months()[0], te.months()[-1], zones)
+    train_b, test_b = buckets_of(tr, origin), buckets_of(te, origin)
+    fc, rows = fit_and_evaluate(C, zones, origin.to_pydatetime(), train_b, test_b, max_iter=max_iter)
+    summary = {"requests": int(C[:, train_b].sum() + C[:, test_b].sum()), "zones": len(zones),
+               "train": str(tr), "test": str(te), "train_buckets": len(train_b), "test_buckets": len(test_b),
+               "history_from": str(origin.date()),
+               "mean_per_zone_bucket": float(C[:, train_b].mean()), "test_mean_per_zone_bucket": float(C[:, test_b].mean())}
     return fc, rows, summary
 
 

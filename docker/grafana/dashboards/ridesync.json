@@ -38,7 +38,7 @@
   {
    "type": "stat",
    "title": "Simulated clock",
-   "description": "Replays start at 17:00 on 13 March 2024.",
+   "description": "Wall-clock time of the replayed day (the run's start + simulated time).",
    "datasource": {
     "type": "grafana-clickhouse-datasource",
     "uid": "clickhouse"
@@ -57,7 +57,7 @@
       "uid": "clickhouse"
      },
      "editorType": "sql",
-     "rawSql": "SELECT formatDateTime(toDateTime('2024-03-13 17:00:00') + toIntervalSecond(toInt32(max(t))), '%H:%i') AS clock FROM rider_events WHERE run = (SELECT if('${run}' = 'latest', argMax(run, started_ms), '${run}') FROM run_markers WHERE kind = 'run_start')",
+     "rawSql": "SELECT formatDateTime(parseDateTimeBestEffortOrZero((SELECT any(JSONExtractString(config, 'start')) FROM run_markers WHERE kind = 'run_start' AND run = (SELECT if('${run}' = 'latest', argMax(run, started_ms), '${run}') FROM run_markers WHERE kind = 'run_start'))) + toIntervalSecond(toInt32(max(t))), '%H:%i') AS clock FROM rider_events WHERE run = (SELECT if('${run}' = 'latest', argMax(run, started_ms), '${run}') FROM run_markers WHERE kind = 'run_start')",
      "format": 1,
      "queryType": "table"
     }

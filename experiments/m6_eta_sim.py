@@ -39,6 +39,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from ridesync.data.slices import DEFAULT_SLICE
 from ridesync.experiments import Arm, paired_summary, run_grid
 from ridesync.matching import CancelBelief, CostParams
 from ridesync.ml.eta import MODEL_PATH, load_bundle
@@ -47,7 +48,6 @@ from ridesync.sim import SimConfig
 
 RESULTS = Path(__file__).parent / "results"
 TOL = "riders.lateness_tolerance_median_s"
-DEFAULT_SLICE = "data/processed/trips_2024-03-13_1700_3h_manhattan_f0.1.parquet"
 AWARE = CostParams(trip_value_s=900.0, cancel=CancelBelief())
 METRICS = ["eta_abs_error_mean_s", "eta_error_mean_s", "eta_late_2min_frac", "cancel_rate", "cancel_eta_rate",
            "cancel_late_rate", "wait_all_mean_s", "pickup_mean_s", "completed_per_hour", "driver_idle_frac"]

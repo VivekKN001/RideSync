@@ -400,3 +400,103 @@ doesn't track repositioning drivers.
 **Framing:** "Coordinated repositioning of idle drivers gives +4% trips/h and halves cancellations when the fleet
 has slack, for +1.3–1.9 pp of empty driving. Uncoordinated drifting to known hot spots does slightly worse than
 staying put. It does nothing when the fleet is already fully busy."
+
+
+# M8: 31 months of data, tested on July 2026
+
+TLC high-volume trips from January 2024 to July 2026 (31 months, 15 GB), each month reduced to ~8 MB: zone
+counts per 15 minutes, a 3,000-a-day trip sample with live-traffic features, a fare sample and exact fee sums
+(`ridesync.data.monthly`). Models train on 2025-01..2026-06, the months since NYC congestion pricing began,
+and are tested on July 2026. The simulator's straight-line speed was recalibrated on 15 July 2026: 3.46 m/s,
+8% slower than March 2024 (3.75). Full tables: `results/m8_*_report.md`, `results/m8_compare_report.md`,
+`results/m8b_summary_report.md`.
+
+## The models on July 2026
+
+| model | M6 (tested on March 2024) | M8 (tested on July 2026) |
+|---|---|---|
+| Demand, 15 min ahead (WAPE) | 16.9% vs 21.4% best baseline | **17.8%** vs 22.4% best baseline |
+| Demand, 60 min ahead | 18.8% vs 22.4% | **19.0%** vs 22.4% |
+| ETA correction, straight base (MAE) | 201 s vs 464 s base alone, 264 s distance x hour table | **211 s** vs 505 s base alone, 279 s distance x hour table |
+| ETA range, 10-90% | 78% of trips inside | **79.5%** inside (target 80%) |
+
+New features: month, US federal holiday and the same slot 52 weeks earlier for demand, month for the ETA.
+On its own, "same time last year" scores 26.3% WAPE: better than last week (28.5%), worse than the
+weekday x time mean (22.4%). July 2026 is a little harder to predict than March 2024 on every method, and the
+model's lead over the best baseline is the same (4.6 pp at 15 minutes).
+
+**Fares moved.** The fit on April-June 2026 calm hours is $3.89 + $1.46/mile + $0.85/minute (minimum $7.71).
+NYC's congestion pricing fee averages **$1.21 a trip in July 2026 and is charged on 81% of Manhattan trips**;
+all fees together add 27.4% on top of the fare.
+
+## Which training data predicts July 2026 best? (`m8_compare.py`)
+
+| trained on | rows | demand WAPE 15 / 60 min | ETA MAE |
+|---|---|---|---|
+| March 2024 (one month, 2 years old) | 0.2 M | 18.2% / 19.9% | 220 s |
+| June 2026 (one month, the latest) | 0.2 M | 17.9% / 19.2% | 217 s |
+| 18 months, cut to one month's rows | 0.2 M | 17.9% / 19.2% | 218 s |
+| 18 months, 2025-01..2026-06 | 3.5 M | 17.8% / 19.0% | 212 s |
+| 30 months, from 2024-01 | 5.8 M | 17.7% / 18.9% | 212 s |
+
+**More data helps, but only a little.** Recency is worth about as much as 17x the volume: at the same size,
+last month beats a two-year-old month (0.3 / 0.7 pp WAPE, 3 s ETA), and all 18 months add about the same again.
+Adding the year before congestion pricing neither helps nor hurts. The reason is the features: most of a
+15-minute forecast comes from the last hour's counts, which every arm reads fresh. **A model trained on March 2024
+is still within 0.4-0.7 pp two years later.** For this problem, retraining monthly on recent data matters more
+than hoarding history.
+
+## The experiments on more days (M8b)
+
+Same code and settings as M2, M6 and M7, on three days of the test month: Wednesday 15 July 17-20 (the new
+default), the same Wednesday 07-10, and Saturday 18 July 20-23.
+
+**Evening peaks repeat M2.** Batching with the cancellation-aware cost against instant nearest-driver, 300
+drivers: -7.3 pp cancellations and +82 trips/h (+10.9%) on Wednesday evening, -7.3 pp and +86 trips/h (+11.4%) on
+Saturday night, against -6.5 pp and +74 (+9.1%) on March 2024. The gain shrinks as the fleet grows, as before.
+
+**The morning peak is a different problem, and batching doesn't solve it.** Wednesday 07-10 has fewer requests
+than the evening (2,890 vs 3,331 in the 10% slice), yet at 500 drivers 19.8% of riders cancel (evening 4.8%),
+pickups take 241 s (179 s) and **more drivers sit idle** (39% vs 29%). The cars are in the wrong places:
+commuters flow one way, and 30% of morning trips leave zones that receive fewer trips than they send (14% in the
+evening). Batching can't fix geography. From 350 drivers up it *raises* cancellations by 0.5-1.0 pp: the wait
+for a batch costs more than a better assignment saves, because few riders compete for the same driver.
+
+**Repositioning is the lever for the morning.** Moving idle drivers to forecast demand (M7's `planned_forecast`)
+at 500 drivers: **-7.2 pp cancellations, +76 trips/h, -45 s pickups** for +3.2 pp empty driving in the morning,
+the largest effect in the project. At 400 drivers -5.6 pp and +59 trips/h. In the evening it gives -2.7 pp and
++30 trips/h at 500 (March 2024: -3.5 pp, +41), and on Saturday night -1.9 pp and +22. Drifting to the usual hot
+spots stays useless everywhere. Under scarcity (300 drivers) nobody is idle long enough to move, as in M7.
+
+**Surge still only rations.** On all three days surge cuts cancellations (up to -12.6 pp at 300 drivers on
+Saturday night) and loses trips (-9 to -41 trips/h), with revenue up through the multiplier. The forecast arm
+stays within noise of the reactive one. Nothing changes with a fixed fleet.
+
+## Full scale: optimal matching finally pays
+
+Wednesday evening with every trip (33,313 requests) and fleets of 3,000-5,000 drivers, 3 seeds. The M2 pattern
+holds and is stronger: batching with the cancellation-aware cost gives -10.7 pp cancellations and **+15% trips/h**
+at 3,000 drivers (+11% at the 10% scale). At the same driver-to-rider ratio, full scale cancels less (4.4% vs
+7.0% at 4,500 vs 450 instant): density shortens pickups.
+
+**The M1c/M2 conclusion "optimal ≈ greedy on throughput" was an artifact of the 10% sample.** At 10%, a batch
+holds 12-36 riders and greedy loses to optimal in 30% of batches. At full scale a batch holds 100-325 riders,
+greedy is worse in 86-91% of them, and it shows in the outcome. Optimal against cheapest-edge greedy on the same
+30 s batches and cost, paired:
+
+| drivers | Δ trips/h | Δ cancel | Δ wait_all |
+|---|---|---|---|
+| 3,000 | +22 ± 32 | -0.2 ± 0.3 pp | +4 ± 3 s |
+| 3,500 | +75 ± 42 | -0.7 ± 0.4 pp | +17 ± 2 s |
+| 4,000 | **+249 ± 28 (+2.3%)** | **-2.2 ± 0.3 pp** | +8 ± 2 s |
+| 4,500 | +187 ± 26 | -1.7 ± 0.2 pp | +4 ± 3 s |
+| 5,000 | +133 ± 21 | -1.2 ± 0.2 pp | +4 ± 3 s |
+
+Under deep scarcity every driver is taken either way; with some slack, large batches give greedy's early bad
+choices room to cascade. The case for the Hungarian algorithm is throughput after all, at the scale a real
+platform runs at.
+
+**Framing:** "Two peaks, two problems. In the evening many riders compete for the same drivers, and batched
+matching with a cancellation-aware cost is the lever (+11% trips at 300 drivers). In the morning, commuter flows
+leave idle cars in the wrong places, batching slightly hurts, and forecast-driven repositioning is the lever
+(-7 pp cancellations, +76 trips/h at 500 drivers)."

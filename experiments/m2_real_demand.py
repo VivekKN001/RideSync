@@ -18,13 +18,13 @@ from pathlib import Path
 
 import pandas as pd
 
+from ridesync.data.slices import DEFAULT_SLICE
 from ridesync.experiments import Arm, markdown_report, paired_summary, run_grid
 from ridesync.matching import CancelBelief, CostParams
 from ridesync.routing import travel_from_calibration
 from ridesync.sim import SimConfig
 
 RESULTS = Path(__file__).parent / "results"
-DEFAULT_SLICE = "data/processed/trips_2024-03-13_1700_3h_manhattan_f0.1.parquet"
 METRICS = [
     "cancel_rate", "wait_all_mean_s", "wait_mean_s", "pickup_mean_s", "completed_per_hour",
     "driver_idle_frac", "batch_riders_mean", "shadow_gap_s_per_batch", "shadow_worse_batches_frac",
@@ -61,6 +61,7 @@ def main():
     ap.add_argument("--fleets", type=int, nargs="+", default=[300, 350, 400, 450, 500])
     ap.add_argument("--seeds", type=int, default=6)
     ap.add_argument("--workers", type=int, default=None)
+    ap.add_argument("--tag", default=None, help="output file prefix under experiments/results (default: m2_<travel>)")
     args = ap.parse_args()
 
     try:
@@ -78,7 +79,7 @@ def main():
     print(f"{len(df)} runs in {time.time() - t0:.0f}s")
 
     observed = pd.read_parquet(args.slice)["observed_wait_s"].dropna()
-    tag = f"m2_{args.travel}"
+    tag = args.tag or f"m2_{args.travel}"
     RESULTS.mkdir(exist_ok=True)
     df.to_csv(RESULTS / f"{tag}_runs.csv", index=False)
     summary = paired_summary(df, "immediate_greedy", METRICS, ["drivers.num_drivers"])
@@ -89,7 +90,7 @@ def main():
         f"Real-world benchmark (Uber, request → driver on scene): mean {observed.mean():.0f}s, "
         f"p50 {observed.median():.0f}s, p90 {observed.quantile(0.9):.0f}s.",
     ]
-    text = markdown_report(summary, f"M2 — real Manhattan demand, {args.travel} travel times",
+    text = markdown_report(summary, f"{tag.split('_')[0].upper()} — real Manhattan demand, {args.travel} travel times",
                            "immediate_greedy", "drivers.num_drivers", notes)
     gap = summary[summary["arm"].str.startswith("optimal")][
         ["drivers.num_drivers", "arm", "shadow_gap_s_per_batch", "shadow_worse_batches_frac", "batch_riders_mean"]]

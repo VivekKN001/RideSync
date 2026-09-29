@@ -4,7 +4,7 @@ The base model (the calibrated straight line, or OSRM times the global multiplie
 right but not where and when it is wrong: Midtown at 18:00 is slower than the Upper West Side at
 noon. The model learns ``log(observed / base)`` from TLC trip times with the features
 
-    log base seconds, log straight-line metres, pickup zone, dropoff zone, hour of day, weekday,
+    log base seconds, log straight-line metres, pickup zone, dropoff zone, hour of day, weekday, month,
     and live traffic: recent speeds city-wide and around both zones (``TrafficFeed``)
 
 and ``CorrectedModel`` multiplies the base's times by ``exp(prediction)``. It learns from trips
@@ -29,7 +29,7 @@ import numpy as np
 
 from ..geo import Route, TravelTimeModel, haversine_m, haversine_pairs_m
 
-FEATURES = ["log_base_s", "log_dist_m", "pu_zone", "do_zone", "hour", "dow"]
+FEATURES = ["log_base_s", "log_dist_m", "pu_zone", "do_zone", "hour", "dow", "month"]
 TRAFFIC_FEATURES = ["city_mph_30", "city_trips_30", "pu_mph_60", "do_mph_60"]
 CATEGORICAL = [FEATURES.index("pu_zone"), FEATURES.index("do_zone")]
 MODEL_PATH = "data/models/eta_{base}.joblib"
@@ -38,13 +38,14 @@ FACTOR_CLIP = (0.4, 4.0)  # a prediction outside this is a model error, not traf
 
 
 def eta_features(base_s: np.ndarray, dist_m: np.ndarray, pu_idx: np.ndarray, do_idx: np.ndarray,
-                 hour: np.ndarray, dow: np.ndarray, traffic: Optional[np.ndarray] = None) -> np.ndarray:
+                 hour: np.ndarray, dow: np.ndarray, month: np.ndarray, traffic: Optional[np.ndarray] = None) -> np.ndarray:
     """The model's input columns: ``FEATURES``, then ``TRAFFIC_FEATURES`` when ``traffic`` (n, 4) is given."""
     n = len(base_s)
     cols = [
         np.log(np.maximum(base_s, 1.0)), np.log(np.maximum(dist_m, 1.0)),
         pu_idx.astype(float), do_idx.astype(float),
         np.broadcast_to(np.asarray(hour, dtype=float), (n,)), np.broadcast_to(np.asarray(dow, dtype=float), (n,)),
+        np.broadcast_to(np.asarray(month, dtype=float), (n,)),
     ]
     if traffic is not None:
         cols += [traffic[:, k] for k in range(traffic.shape[1])]
@@ -139,6 +140,10 @@ class CorrectedModel:
     ``start`` is simulated t = 0, and ``set_time`` moves the clock (``build_batch`` calls it)."""
 
     def __init__(self, base: TravelTimeModel, bundle: dict, zones, start: Optional[datetime] = None):
+        feats = bundle.get("features")
+        if feats is not None and feats not in (FEATURES, FEATURES + TRAFFIC_FEATURES):
+            raise ValueError(f"this ETA bundle was trained with features {feats}, not {FEATURES}: "
+                             "retrain with `python -m ridesync.ml.train eta`")
         self.base = base
         self.bundle = bundle
         self.model = bundle["model"]
@@ -153,11 +158,11 @@ class CorrectedModel:
     def set_time(self, t: float) -> None:
         self.t = t
 
-    def _clock(self) -> Tuple[float, float]:
+    def _clock(self) -> Tuple[float, float, float]:
         if self.start is None:
-            return np.nan, np.nan  # unknown date: the trees send these down their "missing" branches
+            return np.nan, np.nan, np.nan  # unknown date: the trees send these down their "missing" branches
         now = self.start + timedelta(seconds=self.t)
-        return now.hour + now.minute / 60.0, float(now.weekday())
+        return now.hour + now.minute / 60.0, float(now.weekday()), float(now.month)
 
     def _zone_idx(self, pts: np.ndarray) -> np.ndarray:
         out = np.empty(len(pts))
@@ -182,12 +187,12 @@ class CorrectedModel:
         oi, dj = np.nonzero(ok)
         zo, zd = self._zone_idx(origins), self._zone_idx(dests)
         dist = haversine_m(origins, dests)
-        hour, dow = self._clock()
+        hour, dow, month = self._clock()
         traffic = None
         if self.traffic is not None:
             since = np.nan if self.start is None else (self.start - self.traffic.t0).total_seconds() + self.t
             traffic = self.traffic.lookup(since, zo[oi], zd[dj])
-        X = eta_features(base_s[ok], dist[ok], zo[oi], zd[dj], hour, dow, traffic)
+        X = eta_features(base_s[ok], dist[ok], zo[oi], zd[dj], hour, dow, month, traffic)
         f[ok] = np.clip(np.exp((model or self.model).predict(X)), *FACTOR_CLIP)
         return f
 
@@ -307,6 +312,7 @@ class TripSample:
     do_idx: np.ndarray
     hour: np.ndarray
     dow: np.ndarray
+    month: np.ndarray
     observed_s: np.ndarray
     train: np.ndarray
     traffic: Optional[np.ndarray] = None  # (n, 4) TRAFFIC_FEATURES at each request
@@ -314,14 +320,13 @@ class TripSample:
     def X(self, mask=None, traffic: bool = True) -> np.ndarray:
         m = slice(None) if mask is None else mask
         t = self.traffic[m] if traffic and self.traffic is not None else None
-        return eta_features(self.base_s[m], self.dist_m[m], self.pu_idx[m], self.do_idx[m], self.hour[m], self.dow[m], t)
+        return eta_features(self.base_s[m], self.dist_m[m], self.pu_idx[m], self.do_idx[m], self.hour[m], self.dow[m],
+                            self.month[m], t)
 
 
-def place_trips(trips, pts, P: np.ndarray, zones: Sequence[int], month: str, seed: int = 0,
-                feed: Optional[TrafficFeed] = None) -> TripSample:
-    """Put each trip's ends on random pool points of their zones; look up base times, distances and traffic."""
-    from .common import is_train_day
-
+def place_trips(trips, pts, P: np.ndarray, zones: Sequence[int], train: np.ndarray, seed: int = 0) -> TripSample:
+    """Put each trip's ends on random pool points of their zones; look up base times and distances.
+    ``trips`` carries its live-traffic features (``ridesync.data.monthly``); ``train`` marks training rows."""
     rng = np.random.default_rng(seed)
     per_zone = int(pts.groupby("zone").size().min())
     first = {int(z): int(i) for z, i in pts.reset_index().groupby("zone")["index"].min().items()}
@@ -336,12 +341,13 @@ def place_trips(trips, pts, P: np.ndarray, zones: Sequence[int], month: str, see
     do, do2 = pick(trips["DOLocationID"].to_numpy())
     t = trips["request_datetime"]
     pu_idx, do_idx = trips["PULocationID"].map(zi).to_numpy(float), trips["DOLocationID"].map(zi).to_numpy(float)
-    traffic = None if feed is None else feed.lookup((t - feed.t0).dt.total_seconds().to_numpy(), pu_idx, do_idx)
+    traffic = trips[TRAFFIC_FEATURES].to_numpy(float) if set(TRAFFIC_FEATURES) <= set(trips.columns) else None
     return TripSample(
         base_s=P[pu, do], base2_s=P[pu2, do2], dist_m=haversine_pairs_m(xy[pu], xy[do]),
         pu_idx=pu_idx, do_idx=do_idx,
         hour=(t.dt.hour + t.dt.minute / 60.0).to_numpy(float), dow=t.dt.weekday.to_numpy(float),
-        observed_s=trips["trip_time"].to_numpy(float), train=is_train_day(t, month).to_numpy(), traffic=traffic,
+        month=t.dt.month.to_numpy(float), observed_s=trips["trip_time"].to_numpy(float),
+        train=np.asarray(train, dtype=bool), traffic=traffic,
     )
 
 
@@ -453,31 +459,64 @@ def fit_and_evaluate(s: TripSample, max_iter: int = 300) -> Tuple[object, List[d
     return model, rows, extra
 
 
-def train(base_kind: str = "straight", month: str = "2024-03", per_day: int = 20000, osrm_url: str = "http://localhost:5000",
-          max_iter: int = 300, seed: int = 0) -> Tuple[dict, List[dict], dict]:
-    """Sample trips, place them on zone points, fit the correction for a base model. Returns (bundle, rows, extra)."""
-    from ..routing import make_travel_model, travel_from_calibration
-    from .common import month_start, read_service_trips, service_zones
+def load_feed(months: Sequence[str], root: Optional[Path] = None) -> TrafficFeed:
+    """The monthly traffic tables of consecutive months as one feed (``ridesync.data.monthly``).
+    Months are whole 5-minute buckets, so the tables join end to end."""
+    from .common import MONTHLY, monthly_meta
 
+    root = root or MONTHLY
+    parts = []
+    for m in months:
+        monthly_meta(m, root)
+        with np.load(root / m / "traffic.npz") as z:
+            parts.append({k: z[k] for k in ("t0", "city_mph", "city_n", "pu_mph", "do_mph")})
+    t0 = datetime.fromisoformat(str(parts[0]["t0"]))
+    joined = []
+    for k in ("city_mph", "city_n", "pu_mph", "do_mph"):
+        arrs = []
+        for i, p in enumerate(parts):
+            a = p[k]
+            if i + 1 < len(parts):  # trim or pad to the month's length (the last bucket holds late dropoffs)
+                start = datetime.fromisoformat(str(p["t0"]))
+                n = int((datetime.fromisoformat(str(parts[i + 1]["t0"])) - start).total_seconds() // TrafficFeed.BUCKET_S)
+                a = a[:n] if len(a) >= n else np.concatenate([a, np.full((n - len(a),) + a.shape[1:], np.nan, a.dtype)])
+            arrs.append(a)
+        joined.append(np.concatenate(arrs))
+    return TrafficFeed(t0, *joined)
+
+
+def train(base_kind: str = "straight", train_spec: str = "2025-01:2026-06", test_spec: str = "2026-07",
+          per_day: Optional[int] = None, osrm_url: str = "http://localhost:5000", max_iter: int = 300,
+          seed: int = 0) -> Tuple[dict, List[dict], dict]:
+    """Fit the correction for a base model on the training period's trip samples, test on the test period.
+    ``per_day`` subsamples the monthly samples further. Returns (bundle, rows, extra)."""
+    from ..routing import make_travel_model, travel_from_calibration
+    from .common import load_table, service_zones, split
+
+    tr, te = split(train_spec, test_spec)
     zones = service_zones()
     tcfg = travel_from_calibration(base_kind, osrm_url)
     base = make_travel_model(tcfg)
     pts = zone_points(zones)
-    P = base_matrix(pts[["lat", "lon"]].to_numpy(), base, cache=f"data/models/pool_{base_kind}.npy")
+    sig = f"{tcfg.speed_mps:.4f}_{tcfg.detour:.2f}" if base_kind == "straight" else f"{tcfg.time_multiplier:.4f}"
+    P = base_matrix(pts[["lat", "lon"]].to_numpy(), base, cache=f"data/models/pool_{base_kind}_{sig}.npy")  # per calibration
 
-    trips = read_service_trips(month, ["request_datetime", "dropoff_datetime", "PULocationID", "DOLocationID",
-                                       "trip_miles", "trip_time"], zones)
-    trips = trips[(trips["trip_time"] > 60) & (trips["trip_time"] < 3 * 3600) & (trips["trip_miles"] > 0.1)]
-    feed = TrafficFeed.from_trips(trips, zones, month_start(month).to_pydatetime())  # every trip, full scale
-    trips = trips.sample(frac=1.0, random_state=seed)
-    trips = trips.groupby(trips["request_datetime"].dt.day).head(per_day)
-    sample = place_trips(trips.reset_index(drop=True), pts, P, zones, month, seed, feed)
+    trips = load_table(tr.months() + te.months(), "eta")
+    t = trips["request_datetime"]
+    trips = trips[tr.mask(t) | te.mask(t)]
+    if per_day:
+        trips = trips.sample(frac=1.0, random_state=seed)
+        trips = trips.groupby(trips["request_datetime"].dt.normalize()).head(per_day)
+    trips = trips.reset_index(drop=True)
+    sample = place_trips(trips, pts, P, zones, tr.mask(trips["request_datetime"]).to_numpy(), seed)
     model, rows, extra = fit_and_evaluate(sample, max_iter)
+    extra.update({"train": str(tr), "test": str(te)})
     base_sig = {"model": tcfg.model, "speed_mps": tcfg.speed_mps, "detour": tcfg.detour,
                 "time_multiplier": tcfg.time_multiplier}
     lookups = extra.pop("lookups")
+    # The feed covers the test period: simulations run on test days.
     bundle = {"model": model, "zones": list(map(int, zones)), "base": base_sig, "features": FEATURES + TRAFFIC_FEATURES,
-              "traffic": feed.to_dict(), **extra}
+              "traffic": load_feed(te.months()).to_dict(), **extra}
     # The lookup baselines as bundles of their own, usable anywhere a correction is (``TravelConfig.eta_model``).
     bundle["baselines"] = {name: {"model": lk, "zones": bundle["zones"], "base": base_sig, "features": FEATURES}
                            for name, lk in lookups.items()}

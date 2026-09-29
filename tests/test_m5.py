@@ -76,7 +76,8 @@ def test_live_view_follows_the_newest_run():
 
 def test_live_view_waiting_riders_and_matches():
     v = LiveView()
-    v.apply(ev("run_start", 0, started_ms=100))
+    v.apply(ev("run_start", 0, started_ms=100, config={"start": "2026-07-15T17:00:00"}))
+    assert v.snapshot()["start"] == "2026-07-15T17:00:00"  # the page's clock reads the replayed day from here
     v.apply(REQ)
     assert v.snapshot()["waiting"] == [[7, 40.75, -73.98, 5.0]]  # id, position, requested at (for the wait colour)
     v.apply(ev("matched", 30, rider=7, driver=1, quoted_eta_s=90.0))

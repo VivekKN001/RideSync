@@ -24,13 +24,13 @@ from typing import Dict, List
 
 import numpy as np
 
+from ..data.slices import DEFAULT_SLICE, run_start_and_frac
 from ..matching import CancelBelief, CostParams
 from ..routing import travel_from_calibration
 from ..sim import SimConfig, Simulation, summarize
 from ..sim.engine import Driver, DriverState, RiderState
 
 TEMPLATE = Path(__file__).with_name("replay_template.html")
-DEFAULT_SLICE = "data/processed/trips_2024-03-13_1700_3h_manhattan_f0.1.parquet"
 ZONES_ZIP = "data/raw/taxi_zones.zip"
 GRID_DEG = 29.0                      # Manhattan's street grid is about 29 degrees east of true north
 LAT0, LON0 = 40.7580, -73.9855       # Times Square: origin of the local metric frame
@@ -166,6 +166,7 @@ def export(cfg: SimConfig) -> dict:
             },
         })
     t_end = max(s.now for s in sims)
+    start, _ = run_start_and_frac(cfg.demand)
     for run, sim in zip(runs, sims):
         run["series"] = _series(sim, t_end)
 
@@ -173,7 +174,8 @@ def export(cfg: SimConfig) -> dict:
     o = to_xy([r.spec.origin[0] for r in riders], [r.spec.origin[1] for r in riders])
     return {
         "meta": {
-            "date": "Wednesday 13 March 2024", "start_clock_s": 17 * 3600, "t_end": t_end,
+            "date": f"{start:%A} {start.day} {start:%B %Y}" if start else "synthetic city",
+            "start_clock_s": start.hour * 3600 + start.minute * 60 if start else 0, "t_end": t_end,
             "window": [cfg.demand.warmup_s, cfg.demand.duration_s], "drivers": cfg.drivers.num_drivers,
             "seed": cfg.seed, "speed_kmh": round(cfg.travel.speed_mps * 3.6, 1), "detour": cfg.travel.detour,
             "grid_deg": GRID_DEG,

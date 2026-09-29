@@ -11,6 +11,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
 
+# The default demand: a Wednesday evening peak in the M8 test month, 10% of Manhattan trips.
+DEFAULT_SLICE = "data/processed/trips_2026-07-15_1700_3h_manhattan_f0.1.parquet"
+# The slice M2-M7 were measured on, for reproducing those results.
+M6_SLICE = "data/processed/trips_2024-03-13_1700_3h_manhattan_f0.1.parquet"
+
 _NAME = re.compile(r"trips_(\d{4}-\d{2}-\d{2})_(\d{2})(\d{2})_[\d.]+h_.+_f([\d.]+)\.parquet$")
 
 

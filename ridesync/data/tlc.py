@@ -11,11 +11,12 @@ Columns worth knowing:
   It is the real-world wait benchmark for calibrating the simulator.
 - ``trip_time``: seconds from pickup to dropoff. Used to calibrate OSRM times (and to train the M6 ETA model).
 
-    python -m ridesync.data.tlc --date 2024-03-13 --start 17:00 --hours 3 --boroughs Manhattan --sample-frac 0.1
+    python -m ridesync.data.tlc --date 2026-07-15 --start 17:00 --hours 3 --boroughs Manhattan --sample-frac 0.1
 """
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
@@ -23,6 +24,8 @@ import numpy as np
 import pandas as pd
 
 RAW = Path("data/raw")
+# Monthly trip files are ~0.5 GB each; RIDESYNC_TLC_DIR puts them on a bigger disk (default: data/raw).
+TLC_DIR = Path(os.environ.get("RIDESYNC_TLC_DIR") or RAW)
 PROCESSED = Path("data/processed")
 ZONES_ZIP = RAW / "taxi_zones.zip"
 ZONES_LAYER = "taxi_zones/taxi_zones.shp"
@@ -38,7 +41,7 @@ OPERATORS = {"HV0002": "juno", "HV0003": "uber", "HV0004": "via", "HV0005": "lyf
 
 
 def trips_path(month: str) -> Path:
-    return RAW / f"fhvhv_tripdata_{month}.parquet"
+    return TLC_DIR / f"fhvhv_tripdata_{month}.parquet"
 
 
 def load_zones(zip_path: Path = ZONES_ZIP):
@@ -148,8 +151,7 @@ def describe(sl: pd.DataFrame, hours: float, sample_frac: float) -> str:
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--month", default="2024-03")
-    ap.add_argument("--date", default="2024-03-13", help="a weekday in the month")
+    ap.add_argument("--date", default="2026-07-15", help="the day to replay (its month's trip file must be downloaded)")
     ap.add_argument("--start", default="17:00")
     ap.add_argument("--hours", type=float, default=3.0)
     ap.add_argument("--boroughs", nargs="+", default=["Manhattan"])
@@ -159,7 +161,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     args = ap.parse_args(argv)
 
     start = pd.Timestamp(f"{args.date} {args.start}")
-    trips = read_window(trips_path(args.month), start, start + pd.Timedelta(hours=args.hours))
+    trips = read_window(trips_path(args.date[:7]), start, start + pd.Timedelta(hours=args.hours))
     sl = build_slice(trips, load_zones(), start, args.boroughs, args.sample_frac, args.seed)
 
     PROCESSED.mkdir(parents=True, exist_ok=True)

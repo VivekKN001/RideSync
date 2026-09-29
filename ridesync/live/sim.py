@@ -21,12 +21,12 @@ from typing import Dict
 
 import numpy as np
 
+from ..data.slices import DEFAULT_SLICE
 from ..matching import CancelBelief, CostParams
 from ..routing import travel_from_calibration
 from ..sim import SimConfig, simulate, summarize
 from .world import LiveConfig, LiveSimulation
 
-DEFAULT_SLICE = "data/processed/trips_2024-03-13_1700_3h_manhattan_f0.1.parquet"
 AWARE = CostParams(trip_value_s=900.0, cancel=CancelBelief())
 REPORT = [
     "requests", "completed", "cancel_rate", "wait_all_mean_s", "wait_mean_s", "pickup_mean_s",

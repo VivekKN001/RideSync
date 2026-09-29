@@ -76,6 +76,18 @@ def test_features_never_read_the_future(k):
     assert X[1, FEATURES.index("dow")] == (4 + 8) % 7
 
 
+def test_calendar_and_year_before_features():
+    C = np.arange(2 * 364 * PER_DAY, dtype=float)[None, :]
+    origin = datetime(2024, 12, 20)  # a Friday
+    t = np.array([5 * PER_DAY + 3, 364 * PER_DAY + 10])  # 2024-12-25 (a holiday), 2025-12-19
+    X = features(C, t, 1, origin_dow=4, origin=origin)
+    col = {f: X[:, FEATURES.index(f)] for f in ("month", "holiday", "lyear", "dow")}
+    assert col["month"].tolist() == [12, 12] and col["holiday"].tolist() == [1, 0]
+    assert np.isnan(col["lyear"][0]) and col["lyear"][1] == 10  # 364 days back: bucket 10
+    assert col["dow"].tolist() == [(4 + 5) % 7, 4]  # 364 days later is the same weekday
+    assert np.isnan(features(C, t, 1, origin_dow=4)[:, FEATURES.index("month")]).all()  # no origin: unknown
+
+
 def test_hist_mean_is_same_weekday_and_time():
     C = np.zeros((1, 21 * PER_DAY))
     C[0, 5] = 3.0
@@ -96,7 +108,8 @@ def test_forecaster_trains_evaluates_and_round_trips(tmp_path):
     pytest.importorskip("sklearn")
     C = _synthetic_counts()
     origin = datetime(2024, 3, 1)
-    fc, rows = fit_and_evaluate(C, [10, 20, 30], origin, train_days=21, max_iter=30)
+    fc, rows = fit_and_evaluate(C, [10, 20, 30], origin, np.arange(21 * PER_DAY), np.arange(21 * PER_DAY, 28 * PER_DAY),
+                                max_iter=30)
     by = {(r["horizon_min"], r["method"]): r["wape"] for r in rows}
     assert by[(15, "model (GBT, Poisson)")] < by[(15, "last value")]  # it learned the daily cycle
     path = tmp_path / "demand.joblib"

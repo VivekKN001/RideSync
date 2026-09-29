@@ -68,8 +68,10 @@ def table(title, target, ds, w=12, h=9, desc=""):
 
 
 # ---------------------------------------------------------------- headline
-stat("Simulated clock", f"SELECT formatDateTime(toDateTime('2024-03-13 17:00:00') + toIntervalSecond(toInt32(max(t))), '%H:%i') "
-     f"AS clock FROM rider_events WHERE {RUN}", desc="Replays start at 17:00 on 13 March 2024.", text=True)
+stat("Simulated clock", "SELECT formatDateTime(parseDateTimeBestEffortOrZero((SELECT any(JSONExtractString(config, 'start')) "
+     f"FROM run_markers WHERE kind = 'run_start' AND {RUN})) + toIntervalSecond(toInt32(max(t))), '%H:%i') "
+     f"AS clock FROM rider_events WHERE {RUN}", desc="Wall-clock time of the replayed day (the run's start + simulated time).",
+     text=True)
 stat("Ride requests", f"SELECT countIf(type = 'requested') AS requests FROM rider_events WHERE {RUN}")
 stat("Trips completed", f"SELECT countIf(type = 'dropped_off') AS completed FROM rider_events WHERE {RUN}")
 stat("Riders who cancelled", f"SELECT countIf(type = 'cancelled') / greatest(countIf(type = 'requested'), 1) "

@@ -39,6 +39,7 @@ class LiveView:
 
     def _reset(self, run: Optional[str], started_ms: int) -> None:
         self.run, self.started_ms = run, started_ms
+        self.start: Optional[str] = None  # ISO time of simulated t = 0, from run_start
         self.t = 0.0
         self.drivers: Dict[int, list] = {}      # id -> [lat, lon, state code, to_lat, to_lon]
         self.waiting: Dict[int, list] = {}      # rider id -> [lat, lon, requested at t]
@@ -54,6 +55,7 @@ class LiveView:
         with self.lock:
             if typ == "run_start" and v.get("started_ms", 0) > self.started_ms:
                 self._reset(run, v["started_ms"])
+                self.start = (v.get("config") or {}).get("start")  # wall-clock time of t = 0, for the page's clock
             if self.run is None and run:  # joined mid-run: adopt the first run we see
                 self._reset(run, 0)
             if run != self.run:
@@ -102,7 +104,7 @@ class LiveView:
             self.cancels = [c for c in self.cancels if self.t - c[2] < CANCEL_SHOW_S]
             self.matches = [m for m in self.matches if self.t - m[3] < MATCH_SHOW_S]
             return {
-                "run": self.run, "t": self.t, "ended": self.ended, "counts": dict(self.counts),
+                "run": self.run, "start": self.start, "t": self.t, "ended": self.ended, "counts": dict(self.counts),
                 "drivers": [[k, *d] for k, d in self.drivers.items()],
                 "waiting": [[k, *w] for k, w in self.waiting.items()],
                 "matches": [m[:3] for m in self.matches],
