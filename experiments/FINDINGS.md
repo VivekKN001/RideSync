@@ -553,3 +553,92 @@ straight-line one. Tables: `results/m8b_m2_osrm_full_report.md`, `results/m8b_su
 matching with a cancellation-aware cost is the lever (+11% trips at 300 drivers). In the morning, commuter flows
 leave idle cars in the wrong places, batching slightly hurts, and forecast-driven repositioning is the lever
 (-7 pp cancellations, +76 trips/h at 500 drivers)."
+
+---
+
+# M8c: four test months, not one
+
+The same models and experiments on three more months, one per season: Wednesday 15 October 2025, 14 January
+2026 and 15 April 2026, 17:00-20:00, next to July's Wednesday 15th. Each month's models (demand, ETA, fares)
+train only on the 12 months before it (`RIDESYNC_MODELS=data/models_<month>`), and each day's travel is calibrated
+on that day, as July's was. Full tables: `results/m8c_summary_report.md`, per month `results/m8c_*`.
+
+**The models hold in every season.**
+
+| test month | demand WAPE, 15 min: model / best baseline | ETA MAPE: learned / distance x hour table / base alone | ETA 10-90% range |
+|---|---|---|---|
+| Oct 2025 | 16.4% / 18.2% | 24.8% / 32.0% / 53.1% | 79.3% inside |
+| Jan 2026 | 17.3% / 22.2% | 24.7% / 34.0% / 47.2% | 79.4% |
+| Apr 2026 | 16.6% / 18.5% | 24.3% / 32.7% / 54.8% | 79.8% |
+| Jul 2026 | 17.8% / 22.4% | 24.8% / 33.4% / 55.6% | 79.5% |
+
+The demand model's lead is smallest when the weekly pattern is regular (October, April: 1.8-1.9 pp over the zone x
+weekday x time mean at 15 minutes, ~0.1-0.9 pp at 60) and largest when recent counts matter (January, July: 4.6-4.9
+pp). The ETA correction is the most stable model in the project: 24.3-24.8% MAPE in every month.
+
+**Batching pays in proportion to scarcity, and scarcity changes with the season.** At 300 drivers with the
+cancellation-aware cost, against instant nearest-driver:
+
+| test month | instant cancels | straight-line: Δ cancel, Δ trips/h | road times: Δ cancel, Δ trips/h |
+|---|---|---|---|
+| Oct 2025 | 39.1% | −7.5 pp, **+12.2%** | −4.0 pp, +6.7% |
+| Jul 2026 | 33.5% | −7.3 pp, +10.9% | −4.0 pp, +6.1% |
+| Apr 2026 | 29.5% | −5.9 pp, +8.4% | −3.4 pp, +4.8% |
+| Jan 2026 | 14.2% | −2.5 pp, +2.9% | −1.0 pp, +1.3% |
+
+The quiet January evening (2,939 requests in the 10% slice against 3,537 in October) has slack at 300 drivers, and
+on real roads batching does nothing from 400 drivers up. The rule from M1 holds on every day tested: the gain is
+large when riders compete for drivers and gone when drivers wait for riders.
+
+**Coordinated repositioning helps in every month**, with the month's own demand model: at 500 drivers −1.9 to
+−2.7 pp cancellations and +23 to +30 trips/h, for +0.8 to +3.3 pp empty driving. At 400 drivers it helps most in
+January (−2.6 pp, +26 trips/h), the month with the most idle drivers to move.
+
+**The learned ETA wins in every month** when riders give up on late drivers (400 drivers, against the distance x
+hour table): +10.0% to +14.6% trips/h at a 2-minute tolerance, +7.4% to +9.8% at 3 minutes, +1.5% to +5.3% at 5.
+
+**Framing:** "Tested on four months across a year, with models that never saw them: every conclusion holds, and
+the size of the batching gain follows how scarce drivers are that evening."
+
+---
+
+# M6b: surge when drivers respond
+
+M6 found that surge only rations demand, and said why: the fleet was fixed. Published studies of Uber report that
+surge both brings drivers online and draws drivers toward it; no public data gives the size of either. So the
+simulator now has both, as parameters to vary (`SimConfig.supply`, off by default and then invisible, tested):
+
+- **Logging on:** a reserve of offline drivers, 20% of the fleet, placed like the fleet. At each price update an
+  offline driver in an area surged at multiplier m logs on with probability 1 − m^−ε, after a median 5 minutes, and
+  logs off after 20 idle minutes once prices are back to normal.
+- **Chasing:** an idle driver heads for the best price within 10 minutes' drive, with probability strength × the
+  price gap, as an M7 move (dispatchable on the way; counts as empty driving).
+
+Same setup as M6 (rider elasticity 0.5), 6 seeds, on all six test days. Δ trips/h against no surge (medium
+response: ε = 1, chase strength 0.5; full table `results/m6b_summary_report.md`):
+
+| day | 300 drivers: fixed fleet / chase only / log on / both | 500 drivers: surge, both / free repositioning |
+|---|---|---|
+| Wed 15 Jul, evening | −37 / −36 / **+88** / **+90** | −0 / **+20** |
+| Sat 18 Jul, night | −41 / −42 / **+80** / **+81** | +10 / **+18** |
+| Wed 15 Oct, evening | −46 / −43 / **+82** / **+84** | +13 / **+19** |
+| Wed 15 Apr, evening | −43 / −39 / **+60** / **+64** | −2 / **+23** |
+| Wed 14 Jan, evening | −36 / −28 / +20 / +24 | +3 / **+16** |
+| Wed 15 Jul, morning | −26 / −21 / +21 / +26 | +13 / **+71** |
+
+**Surge works through new drivers, not moved ones.** On every day, surge with a fixed fleet loses trips, and
+drivers who only chase it change almost nothing (within 9 trips/h of the fixed fleet): moving the drivers already online
+toward surge empties the areas they left. When reserve drivers log on, the same surge serves **+60 to +90 trips/h
+(+8–11%)** on the four busy evenings with 300 drivers: 50–54 extra drivers online, fewer riders priced out (9–15%
+instead of 16–20% with a fixed fleet), cancellations down from 24–32% to 9–11%, and fares per online driver-hour
+up 33–67% (from ~$62 to $81–103). The strong
+response (ε = 2, chase 1.0) adds only a few trips more; the forecast-driven price performs like the reactive one.
+
+**With slack, free repositioning is the better tool.** At 500 drivers surge draws few drivers (prices rarely rise)
+and gains −2 to +13 trips/h, while coordinated repositioning, which moves drivers for free, gains +16 to +23 on evenings
+and **+71 in the morning peak**. On quiet days (January, the morning peak) surge's gain is small even when drivers
+are scarce, because demand, not supply, is the limit, and pricing it away costs riders.
+
+**Framing:** "Surge isn't a way to share out the drivers you have; it's a way to get more of them. With a fixed
+fleet it only prices riders out. When it pulls drivers online it's the best lever under scarcity (+8–11% trips,
++33–67% driver earnings per hour). When drivers are already idle, moving them for free beats charging riders more."

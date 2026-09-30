@@ -117,15 +117,15 @@ caveats: [`experiments/FINDINGS.md`](experiments/FINDINGS.md).
 
 | Question | Answer |
 |---|---|
-| Does batching beat instant nearest-driver? (M1, M2, M8b) | Yes, under scarcity: 30 s batches with a cancellation-aware cost give **−4 pp cancellations, +5–6% trips/h** on real roads (300 drivers, March 2024 and July 2026), and **+11% trips/h** on July 2026 evening peaks with straight-line times. The gain disappears once supply is ample, and in the morning peak it doesn't help (on real roads it costs 2 pp more cancellations). |
+| Does batching beat instant nearest-driver? (M1, M2, M8b, M8c) | Yes, under scarcity, on four test months across a year: 30 s batches with a cancellation-aware cost give **−4 pp cancellations, +5–6% trips/h** on real roads (300 drivers, March 2024 and July 2026), and **+11% trips/h** on July 2026 evening peaks with straight-line times. The gain follows how scarce drivers are that evening (+3% in a quiet January, +12% in October), disappears once supply is ample, and in the morning peak it doesn't help (on real roads it costs 2 pp more cancellations). |
 | Does optimal (Hungarian) beat greedy on a batch? (M1c, M2, M8b) | At the 10% sample, only per batch (better in 19–41% of batches; trips/h within noise, on straight-line and road times). **At full scale, yes**: batches hold 100–325 riders, greedy is worse in 86–93% of them, and optimal gives **+249 ± 28 trips/h and −2.2 pp cancellations** at 4,000 drivers; **+148 to +191 trips/h (−1.3 to −1.7 pp) on real roads**. |
 | What does going live cost? (M3) | +1.4 to +4.2 s of rider wait at 10–60× speed and nothing else. At zero latency the live path is bit-identical to offline. Tick-to-batch takes 15–22 ms p50. |
 | How long should the stream wait for late events? (M4) | 1 s cuts lost events 10×, down to 0.03%. The job waits 2 s, and nothing is silently dropped. |
-| Can we forecast demand? (M6, M8) | On July 2026, trained on 18 months: **17.8% WAPE** per zone per 15 min, against 22.4% for the best baseline; 19.0% at 60 min ahead. |
+| Can we forecast demand? (M6, M8, M8c) | On July 2026, trained on 18 months: **17.8% WAPE** per zone per 15 min, against 22.4% for the best baseline; 19.0% at 60 min ahead. On October, January and April, each trained on the 12 months before: 16.4–17.3%, ahead of the best baseline every month. |
 | Does more (or newer) data help? (M8) | A little. Trained on 30 months instead of one: 18.2% → 17.7% WAPE, 220 → 212 s ETA error. Recency counts as much as 17× the volume, and a model trained on March 2024 still works two years later. |
-| How good is the ETA? (M6) | A learned correction with live traffic features: **24.0% MAPE**, against 40.8% for OSRM alone. That is at the limit of zone-level data (an oracle scores 22–29%). The 10–90% range covers 78% of trips. |
+| How good is the ETA? (M6, M8c) | A learned correction with live traffic features: **24.0% MAPE**, against 40.8% for OSRM alone. That is at the limit of zone-level data (an oracle scores 22–29%). The 10–90% range covers 78% of trips. On four test months: 24.3–24.8% every month. |
 | Does an honest ETA matter? (M6, M8b) | When riders give up on late drivers, the learned ETA adds **+5% to +12% trips/h (+44 to +87)** over a simple distance × hour table (July 2026: +5% to +14%; **on road times +8% to +57%**), and +25% to +130% over one city-wide speed (tolerances of 5 to 2 min). |
-| Does surge help? (M6) | With a fixed fleet it only rations demand: fewer cancellations and shorter queues, fewer trips. The forecast doesn't beat current demand, in or out of sample. |
+| Does surge help? (M6, M6b) | **Only if drivers respond.** With a fixed fleet it rations demand: fewer trips on every day tested. When a reserve of drivers logs on under surge, it adds **+60 to +90 trips/h (+8–11%)** on busy evenings with 300 drivers and lifts fares per online driver-hour from ~$62 to $81–103. Drivers who only chase surge add nothing. With slack, free repositioning beats surge on every day. The forecast doesn't beat current demand. |
 | Does moving idle drivers help? (M7, M8b) | With slack (500 drivers), coordinated repositioning **halves cancellations (6.9% → 3.5%), cuts pickups 37–43 s, +4% trips/h** for +1.3–1.9 pp empty driving. In the morning peak, where commuter flows strand idle cars, it's the biggest lever in the project: **−7.2 pp cancellations, +76 trips/h**. Uncoordinated drift to hot spots doesn't help. |
 
 ## Status
@@ -139,24 +139,24 @@ caveats: [`experiments/FINDINGS.md`](experiments/FINDINGS.md).
 | M4 | PyFlink job: driver state, windowed zone features, late events | done: stream features below |
 | M5 | Postgres sink, ClickHouse, Grafana, deck.gl live map | done: screens below |
 | M6 | ML: demand forecast, ETA correction (live traffic, ranges), fare fit, surge policy + elasticity | done |
+| M6b | Drivers who respond to surge: a reserve that logs on, idle drivers who chase prices (offline) | done: [findings](experiments/FINDINGS.md) |
 | M7 | Idle-driver repositioning: drift baseline vs coordinated plan (offline) | done |
-| M8 | 31 months of TLC data (2024-01..2026-07), models tested on July 2026, experiments on 3 more days and at full scale | done: recent data below |
+| M8 | 31 months of TLC data (2024-01..2026-07), models tested on July 2026, experiments on 3 more days and at full scale; M8c: three more test months | done: recent data below |
 | M9 | Free public demo: replay on GitHub Pages, in-process demo mode, sharing over a tunnel, locked-down stack | done: public demo below |
-| M10 | Repositioning in live mode | planned |
+| M10 | Repositioning, drivers logging on and off, and en-route cancellation in live mode | next |
 
 ## Limitations
 
-- **Rider behaviour is assumed, not measured.** No public data exists for patience, ETA tolerance or price
-  elasticity, so the experiments vary them instead of claiming one true value.
+- **Rider and driver behaviour are assumed, not measured.** No public data exists for patience, ETA tolerance,
+  price elasticity or how drivers respond to surge, so the experiments vary them instead of claiming one true value.
 - **Zone-level data.** TLC records zones, not coordinates, so trip ends are sampled inside zone polygons. That puts
   a floor under ETA accuracy, and the M6 report measures it.
-- **One test month.** M8 tests on July 2026 only: four days (weekday morning and evening, Saturday night) and one
-  full-scale evening, each on straight-line and road times. At full scale on road times only 3 fleet sizes, 3
-  strategies and 2 seeds were run (a run takes 1.5-3.5 hours); the complete grid is left to run in the background
-  (`--resume`).
-- **Fixed fleet.** Drivers don't respond to prices, so surge can only ration demand (see the results).
-- **Repositioning is offline only.** The live matcher doesn't track repositioning or en-route cancellation yet
-  (M10). Not reassigning riders after dispatch is a design decision (below), not a gap.
+- **One day per test month.** Four test months (October, January, April, July) are each tested on one Wednesday
+  evening; the morning peak, Saturday night and full scale only on July. At full scale on road times only 3 fleet
+  sizes, 3 strategies and 2 seeds were run (a run takes 1.5-3.5 hours); the complete grid is left to run in the
+  background (`--resume`).
+- **Repositioning is offline only.** The live matcher doesn't track repositioning, drivers logging on or off, or
+  en-route cancellation yet (M10). Not reassigning riders after dispatch is a design decision (below), not a gap.
 - **Single machine.** Kafka has one broker and no replication. The live stack is a demo, not a deployment.
 
 ## Decisions
@@ -250,7 +250,8 @@ running and surge priced by the separate pricing service (`--surge forecast --pr
 - **Surge pressure is pooled over 2 km.** Per zone, a 10% slice has a few riders and 0–1 free drivers, so
   unpooled pressure is noise and surged about half of all trips even with a third of the fleet idle.
 - **Surge with a fixed fleet only rations.** No drivers come when prices rise, so surge trades
-  trips for fewer cancellations and more revenue per trip. The question it can answer: do forecast-driven prices beat
+  trips for fewer cancellations and more revenue per trip. M6b adds drivers who respond (`SimConfig.supply`):
+  a reserve that logs on as its area surges, and idle drivers who chase higher prices. Off by default. The question it can answer: do forecast-driven prices beat
   prices from current counts? Elasticity has no public data, so it's an assumption and the experiment varies it.
   All riders' price draws are seeded per rider, so arms stay paired. With surge off the simulator is unchanged (tested).
 - **The ETA model learns from trips and is applied to every drive.** TLC records pickup-to-dropoff times, not the

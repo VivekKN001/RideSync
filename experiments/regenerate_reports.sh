@@ -31,4 +31,18 @@ run experiments/m6_eta_sim.py --base straight --tag m8b_eta_sim --noise 0.275
 run experiments/m6_eta_sim.py --base straight --tag m8b_eta_sim --noise 0.275 --late-tolerance 120 180 300
 run experiments/m6_eta_sim.py --base osrm --tag m8b_eta_sim --noise 0.268
 run experiments/m6_eta_sim.py --base osrm --tag m8b_eta_sim --noise 0.268 --late-tolerance 120 180 300
-echo "== m8b_summary"; unset RIDESYNC_NO_SIM; python experiments/m8b_summary.py > /dev/null && echo "all regenerated"
+for m in "2025-10 2025-10-15" "2026-01 2026-01-14" "2026-04 2026-04-15"; do set -- $m
+  SL=$P/trips_$2_1700_3h_manhattan_f0.1.parquet
+  export RIDESYNC_MODELS=data/models_$1 RIDESYNC_CALIBRATION=$P/calibration_$1.json
+  run experiments/m2_real_demand.py --slice $SL --tag m8c_m2_$1
+  run experiments/m7_reposition.py --slice $SL --tag m8c_m7_$1
+  run experiments/m6_eta_sim.py --base straight --slice $SL --tag m8c_eta_sim_$1 --late-tolerance 120 180 300
+  run experiments/m2_real_demand.py --travel osrm --slice $SL --fleets 300 400 500 --seeds 4 $OSRM_ARMS --tag m8c_m2_osrm_$1
+  run experiments/m6b_supply.py --slice $SL --tag m6b_supply_$1
+done
+unset RIDESYNC_MODELS RIDESYNC_CALIBRATION
+run experiments/m6b_supply.py --slice $PM --tag m6b_supply_wed_pm
+run experiments/m6b_supply.py --slice $AM --tag m6b_supply_wed_am
+run experiments/m6b_supply.py --slice $SAT --tag m6b_supply_sat_night
+echo "== summaries"; unset RIDESYNC_NO_SIM
+python experiments/m8b_summary.py > /dev/null && python experiments/m8c_summary.py > /dev/null   && python experiments/m6b_summary.py > /dev/null && echo "all regenerated"
