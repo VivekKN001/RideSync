@@ -193,40 +193,64 @@ def next_timer(st: dict) -> Optional[int]:
 
 
 # ------------------------------------------------------------ reference run
-def run_reference(msgs, zones: ZoneIndex, out_of_order_ms: int = 0) -> Tuple[List[dict], List[dict], dict]:
-    """Both stages over messages in arrival order, with Flink's bounded-out-of-orderness watermark.
+class FeatureStream:
+    """Both stages, one message at a time, with Flink's bounded-out-of-orderness watermark.
 
-    The watermark is (largest event time seen) - out_of_order_ms. Returns (rows, late events, zone
-    states). This is what the Flink job computes, minus parallelism and fault tolerance; tests and
-    the late-events experiment use it as the reference.
+    The watermark is (largest event time seen) - out_of_order_ms. This is what the Flink job computes,
+    minus parallelism and fault tolerance. ``run_reference`` runs it over a list; the in-memory demo
+    (``ridesync.web.demo``) feeds it live, so the map shows zone pressure without Flink.
     """
-    entities: Dict[str, dict] = {}
-    states: Dict[str, dict] = {}
-    rows, late = [], []
-    max_ts = None
-    for msg in msgs:
+
+    def __init__(self, zones: ZoneIndex, out_of_order_ms: int = 0):
+        self.zones, self.out_of_order_ms = zones, out_of_order_ms
+        self.entities: Dict[str, dict] = {}
+        self.states: Dict[str, dict] = {}
+        self.late: List[dict] = []
+        self.max_ts: Optional[int] = None
+
+    def feed(self, msg: dict) -> List[dict]:
+        """Apply one message; return the zone_minute rows it closes."""
         if "ts" in msg:  # ticks move the watermark too, as they do in Flink
-            max_ts = msg["ts"] if max_ts is None else max(max_ts, msg["ts"])
+            self.max_ts = msg["ts"] if self.max_ts is None else max(self.max_ts, msg["ts"])
         key = entity_key(msg)
-        if key is None or max_ts is None:
-            continue
-        st, events = enrich(entities.get(key), msg, zones)
+        if key is None or self.max_ts is None:
+            return []
+        st, events = enrich(self.entities.get(key), msg, self.zones)
         if st is None:
-            entities.pop(key, None)
+            self.entities.pop(key, None)
         else:
-            entities[key] = st
+            self.entities[key] = st
         for ev in events:
-            zst = states.setdefault(zone_key(ev), new_zone_state())
+            zst = self.states.setdefault(zone_key(ev), new_zone_state())
             if add_event(zst, ev):
-                late.append(ev)
-        watermark = max_ts - out_of_order_ms
-        for zk, zst in states.items():
+                self.late.append(ev)
+        watermark = self.max_ts - self.out_of_order_ms
+        rows = []
+        for zk, zst in self.states.items():
             nxt = next_timer(zst)
             if nxt is not None and nxt <= watermark:
                 run, zone = zk.rsplit("|", 1)
                 rows += close_until(zst, run, int(zone), watermark)
-    for zk, zst in states.items():  # end of input: the watermark goes to +infinity
-        run, zone = zk.rsplit("|", 1)
-        while zst["ends"]:
-            rows += close_until(zst, run, int(zone), max(zst["ends"].values()))
-    return rows, late, states
+        return rows
+
+    def finish(self) -> List[dict]:
+        """End of input: the watermark goes to +infinity."""
+        rows = []
+        for zk, zst in self.states.items():
+            run, zone = zk.rsplit("|", 1)
+            while zst["ends"]:
+                rows += close_until(zst, run, int(zone), max(zst["ends"].values()))
+        return rows
+
+
+def run_reference(msgs, zones: ZoneIndex, out_of_order_ms: int = 0) -> Tuple[List[dict], List[dict], dict]:
+    """``FeatureStream`` over messages in arrival order. Returns (rows, late events, zone states).
+
+    Tests and the late-events experiment use it as the reference for the Flink job.
+    """
+    fs = FeatureStream(zones, out_of_order_ms)
+    rows = []
+    for msg in msgs:
+        rows += fs.feed(msg)
+    rows += fs.finish()
+    return rows, fs.late, fs.states

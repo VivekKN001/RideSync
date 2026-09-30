@@ -1,6 +1,7 @@
 """Live map server: follows the newest run in Kafka and streams its state to the browser.
 
     python -m ridesync.web                  # http://localhost:8000
+    python -m ridesync.web --demo           # no Kafka or Docker: simulator and matcher in-process (ridesync.web.demo)
 
 A background thread reads rider-events, driver-events (including location pings)
 and zone-features from the end of each topic, and keeps a small picture of the
@@ -16,7 +17,7 @@ import json
 import threading
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect  # module level: FastAPI resolves annotations here
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -116,7 +117,19 @@ class LiveView:
 def follow(view: LiveView, bootstrap: str, prefix: str, stop: threading.Event) -> None:
     from ..live.kafka_bus import KafkaBus
 
-    consumer = KafkaBus(bootstrap, prefix).consumer([RIDER_EVENTS, DRIVER_EVENTS, ZONE_FEATURES], from_beginning=False)
+    told = False
+    while not stop.is_set():  # the topics may not exist yet: the simulator creates them when it starts
+        try:
+            consumer = KafkaBus(bootstrap, prefix).consumer([RIDER_EVENTS, DRIVER_EVENTS, ZONE_FEATURES],
+                                                            from_beginning=False)
+            break
+        except RuntimeError as e:
+            if not told:
+                print(f"live map: {e}; retrying every 2 s", flush=True)
+                told = True
+            stop.wait(2.0)
+    else:
+        return
     while not stop.is_set():
         for m in consumer.poll(0.2):
             view.apply(m.value)
@@ -135,19 +148,39 @@ def manhattan_geojson(path: str = ZONES_JSON) -> dict:
     return {"type": "FeatureCollection", "features": feats}
 
 
-def create_app(bootstrap: str = "localhost:9092", prefix: str = "", grafana: str = "http://localhost:3000") -> FastAPI:
+def render_page(label: str, links: Dict[str, str], replay: str = "") -> str:
+    """index.html for one mode: the eyebrow label, footer links (name -> url, empty urls left out) and,
+    for the static replay, the recording to play instead of the WebSocket."""
+    html = "".join(f'<a href="{url}" target="_blank" rel="noopener">{name}</a>' for name, url in links.items() if url)
+    return ((STATIC / "index.html").read_text(encoding="utf-8")
+            .replace("__LABEL__", label).replace("__LINKS__", html).replace("__REPLAY__", replay))
+
+
+def create_app(bootstrap: str = "localhost:9092", prefix: str = "", grafana: str = "http://localhost:3000",
+               flink: str = "http://localhost:8081", demo: Optional[Tuple[object, float]] = None) -> FastAPI:
+    """``demo`` = (SimConfig, speed) plays that run in-process instead of following Kafka."""
     view, stop = LiveView(), threading.Event()
     app = FastAPI(title="RideSync live map")
     geojson = manhattan_geojson()
-    page = (STATIC / "index.html").read_text(encoding="utf-8").replace("__GRAFANA__", grafana)
+    page = render_page("live demo" if demo else "live", {"Grafana": grafana, "Flink UI": flink})
+    loop = None
+    if demo is not None:
+        from .demo import DemoLoop
+
+        loop = DemoLoop(demo[0], view, demo[1])
 
     @app.on_event("startup")
     def _start() -> None:
-        threading.Thread(target=follow, args=(view, bootstrap, prefix, stop), daemon=True).start()
+        if loop is not None:
+            loop.start()
+        else:
+            threading.Thread(target=follow, args=(view, bootstrap, prefix, stop), daemon=True).start()
 
     @app.on_event("shutdown")
     def _stop() -> None:
         stop.set()
+        if loop is not None:
+            loop.stop.set()
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
@@ -171,18 +204,45 @@ def create_app(bootstrap: str = "localhost:9092", prefix: str = "", grafana: str
     return app
 
 
-def main(argv=None) -> None:
-    import uvicorn
+def build_parser(description: str = "RideSync live map") -> argparse.ArgumentParser:
+    from ..live.sim import add_args
 
-    ap = argparse.ArgumentParser(description="RideSync live map")
+    ap = argparse.ArgumentParser(description=description)
     ap.add_argument("--bootstrap", default="localhost:9092")
     ap.add_argument("--prefix", default="")
     ap.add_argument("--port", type=int, default=8000)
-    ap.add_argument("--grafana", default="http://localhost:3000")
-    args = ap.parse_args(argv)
-    print(f"live map: http://localhost:{args.port}", flush=True)
-    uvicorn.run(create_app(args.bootstrap, args.prefix, args.grafana), host="127.0.0.1", port=args.port,
-                log_level="warning")
+    ap.add_argument("--grafana", default="http://localhost:3000", help="footer link; '' hides it")
+    ap.add_argument("--flink", default="http://localhost:8081", help="footer link; '' hides it")
+    demo = ap.add_argument_group("demo", "--demo: play a run in-process instead of following Kafka")
+    demo.add_argument("--demo", action="store_true")
+    demo.add_argument("--speed", type=float, default=30.0, help="simulated seconds per wall second")
+    add_args(demo)
+    ap.set_defaults(drivers=400)  # scarce enough that riders wait and some cancel
+    return ap
+
+
+def app_from_args(args, grafana: Optional[str] = None, flink: Optional[str] = None) -> FastAPI:
+    """The app for parsed ``build_parser`` args; ``grafana``/``flink`` override the footer links."""
+    if args.demo:
+        from ..live.sim import config_from_args
+        from ..routing import CALIBRATION
+
+        missing = [p for p in ([args.slice] if args.slice != "synthetic" else []) + [CALIBRATION] if not Path(p).exists()]
+        if missing:
+            raise SystemExit(f"--demo needs {' and '.join(missing)}: see the README's Run section, M2 (three commands, "
+                             "~0.5 GB download). Or watch the recorded run: https://vivekkn001.github.io/RideSync/")
+        return create_app(grafana="", flink="", demo=(config_from_args(args), args.speed))
+    return create_app(args.bootstrap, args.prefix, args.grafana if grafana is None else grafana,
+                      args.flink if flink is None else flink)
+
+
+def main(argv=None) -> None:
+    import uvicorn
+
+    args = build_parser().parse_args(argv)
+    app = app_from_args(args)
+    print(f"live map{' (demo)' if args.demo else ''}: http://localhost:{args.port}", flush=True)
+    uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
 
 
 if __name__ == "__main__":

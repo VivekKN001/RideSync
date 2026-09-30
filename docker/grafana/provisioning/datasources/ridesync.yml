@@ -1,3 +1,4 @@
+# Grafana reads through read-only database users (docker/clickhouse/users.d, docker/postgres/init/02_roles.sh).
 apiVersion: 1
 datasources:
   - name: ClickHouse
@@ -8,18 +9,18 @@ datasources:
       host: clickhouse
       port: 9000
       protocol: native
-      username: ridesync
+      username: grafana
       defaultDatabase: ridesync
     secureJsonData:
-      password: ridesync
+      password: $GRAFANA_DB_PASSWORD
   - name: Postgres
     uid: postgres
     type: grafana-postgresql-datasource
     url: postgres:5432
-    user: ridesync
+    user: grafana
     jsonData:
       database: ridesync
       sslmode: disable
       postgresVersion: 1600
     secureJsonData:
-      password: ridesync
+      password: $GRAFANA_DB_PASSWORD

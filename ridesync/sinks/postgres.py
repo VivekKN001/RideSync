@@ -1,7 +1,9 @@
 """Postgres trip ledger: one row per trip, upserted as the trip's events arrive.
 
     python -m ridesync.sinks.postgres
-    python -m ridesync.sinks.postgres --dsn postgresql://ridesync:ridesync@localhost:5432/ridesync
+    python -m ridesync.sinks.postgres --dsn postgresql://user:password@host:5432/ridesync
+
+The default DSN is the compose Postgres with the password from .env (``ridesync.env.pg_dsn``).
 
 Unlike the matcher, this is a normal consumer group (``postgres-trip-ledger``)
 with committed offsets, so after a restart it continues where it stopped.
@@ -18,9 +20,9 @@ import sys
 import time
 from typing import Iterable, Optional, Tuple
 
+from ..env import pg_dsn
 from ..live.schema import RIDER_EVENTS, decode
 
-DSN = "postgresql://ridesync:ridesync@localhost:5432/ridesync"
 STATUS = {"requested": "requested", "matched": "matched", "picked_up": "picked_up",
           "dropped_off": "dropped_off", "cancelled": "cancelled"}
 FIELDS = ("requested_s", "matched_s", "picked_up_s", "finished_s", "requested_at", "origin_lat", "origin_lon",
@@ -94,7 +96,7 @@ def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description="Kafka rider-events -> Postgres trip ledger")
     ap.add_argument("--bootstrap", default="localhost:9092")
     ap.add_argument("--prefix", default="")
-    ap.add_argument("--dsn", default=DSN)
+    ap.add_argument("--dsn", default=None, help="default: from .env")
     args = ap.parse_args(argv)
 
     consumer = Consumer({
@@ -108,7 +110,7 @@ def main(argv=None) -> None:
     signal.signal(signal.SIGINT, lambda *_: stop.update(now=True))
     print("postgres sink: running (Ctrl+C to stop)", flush=True)
     written, last_log = 0, time.monotonic()
-    with psycopg.connect(args.dsn, autocommit=True) as conn:
+    with psycopg.connect(args.dsn or pg_dsn(), autocommit=True) as conn:
         while not stop["now"]:
             batch = consumer.consume(num_messages=1000, timeout=0.5)
             msgs = []

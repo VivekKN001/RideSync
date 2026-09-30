@@ -1,0 +1,20 @@
+<!-- Grafana's ClickHouse user: read-only, the ridesync database only. Anonymous dashboard viewers can send
+     queries through Grafana (the share tunnel exposes it), so they must not be able to write, change settings
+     that matter, or read files. Applied on every start, so existing data volumes get it too. -->
+<clickhouse>
+    <profiles>
+        <grafana_readonly>
+            <readonly>2</readonly>
+            <max_execution_time>30</max_execution_time>
+            <max_memory_usage>300000000</max_memory_usage>
+        </grafana_readonly>
+    </profiles>
+    <users>
+        <grafana>
+            <password from_env="GRAFANA_DB_PASSWORD"/>
+            <profile>grafana_readonly</profile>
+            <networks><ip>::/0</ip></networks>
+            <grants><query>GRANT SELECT ON ridesync.*</query></grants>
+        </grafana>
+    </users>
+</clickhouse>

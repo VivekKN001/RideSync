@@ -4,6 +4,9 @@
 # Plain `docker compose up -d` starts only Kafka; the rest sit behind profiles:
 #   stream  -> Flink (jobmanager + taskmanager)      routing -> OSRM
 #   storage -> ClickHouse, Postgres, Grafana         prep / submit -> one-off jobs
+# Passwords come from .env (copy .env.example once and change them). Every port listens on 127.0.0.1 only;
+# `python -m ridesync.web.share` is the one way in from outside (the live map and a read-only Grafana).
+#
 # When you're done: `docker compose --profile "*" stop`. A plain `docker compose stop` (or `down`)
 # only acts on active profiles, i.e. Kafka alone, and leaves Flink/ClickHouse/Grafana running.
 #
@@ -50,7 +53,8 @@ services:
     # containers (Flink in M4) use kafka:19092.
     image: apache/kafka:3.9.1
     ports:
-      - "9092:9092"
+      - "127.0.0.1:9092:9092"
+      - "[::1]:9092:9092"  # localhost is ::1 first on Windows
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
@@ -95,7 +99,8 @@ services:
     volumes:
       - ./data/osm:/data:ro
     ports:
-      - "5000:5000"
+      - "127.0.0.1:5000:5000"
+      - "[::1]:5000:5000"  # localhost is ::1 first on Windows
     mem_limit: 2g
     restart: "no"
 
@@ -104,7 +109,8 @@ services:
     image: ridesync-flink:1.20
     command: jobmanager
     ports:
-      - "8081:8081"
+      - "127.0.0.1:8081:8081"
+      - "[::1]:8081:8081"  # localhost is ::1 first on Windows
     environment:
       FLINK_PROPERTIES: *flink-properties
     volumes: *flink-volumes
@@ -137,16 +143,19 @@ services:
     profiles: ["storage"]
     image: clickhouse/clickhouse-server:24.8
     ports:
-      - "8123:8123"
+      - "127.0.0.1:8123:8123"
+      - "[::1]:8123:8123"  # localhost is ::1 first on Windows
     environment:
       CLICKHOUSE_DB: ridesync
       CLICKHOUSE_USER: ridesync
-      CLICKHOUSE_PASSWORD: ridesync
+      CLICKHOUSE_PASSWORD: ${RIDESYNC_DB_PASSWORD:?set it in .env (copy .env.example)}
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+      GRAFANA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD:?set it in .env (copy .env.example)}
     volumes:
       - clickhouse-data:/var/lib/clickhouse
       - ./docker/clickhouse/init:/docker-entrypoint-initdb.d:ro
       - ./docker/clickhouse/config.d/ridesync.xml:/etc/clickhouse-server/config.d/ridesync.xml:ro
+      - ./docker/clickhouse/users.d/grafana.xml:/etc/clickhouse-server/users.d/grafana.xml:ro
       - ./data/raw/taxi_zone_lookup.csv:/var/lib/clickhouse/user_files/taxi_zone_lookup.csv:ro
     ulimits:
       nofile: {soft: 262144, hard: 262144}
@@ -159,28 +168,36 @@ services:
     profiles: ["storage"]
     image: postgres:16-alpine
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
+      - "[::1]:5432:5432"  # localhost is ::1 first on Windows
     environment:
       POSTGRES_DB: ridesync
       POSTGRES_USER: ridesync
-      POSTGRES_PASSWORD: ridesync
+      POSTGRES_PASSWORD: ${RIDESYNC_DB_PASSWORD:?set it in .env (copy .env.example)}
+      GRAFANA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD:?set it in .env (copy .env.example)}
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
     mem_limit: 256m
     restart: "no"
 
   grafana:
-    # Live dashboards on http://localhost:3000 (no login needed locally). Dashboards live in the repo:
-    # edit docker/grafana/make_dashboard.py, run it, and Grafana picks the file up.
+    # Live dashboards on http://localhost:3000. Anyone can view without logging in (the share tunnel exposes it),
+    # so visitors are Viewers and the datasources use read-only database users. Log in as admin to edit.
+    # Dashboards live in the repo: edit docker/grafana/make_dashboard.py, run it, and Grafana picks the file up.
     profiles: ["storage"]
     image: grafana/grafana:11.4.0
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
+      - "[::1]:3000:3000"  # localhost is ::1 first on Windows
     environment:
       GF_INSTALL_PLUGINS: grafana-clickhouse-datasource
       GF_AUTH_ANONYMOUS_ENABLED: "true"
-      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_ANONYMOUS_HIDE_VERSION: "true"
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set it in .env (copy .env.example)}
+      GF_SNAPSHOTS_ENABLED: "false"
+      GRAFANA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD:?set it in .env (copy .env.example)}
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/ridesync.json
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       GF_NEWS_NEWS_FEED_ENABLED: "false"

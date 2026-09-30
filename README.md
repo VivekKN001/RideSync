@@ -6,9 +6,15 @@ Real-time ride-hailing dispatch: batched optimal bipartite matching (Hungarian) 
 evaluated on a measurable cost function (wait time, cancellations, driver idle time), on real Manhattan
 demand (NYC TLC, 31 months to July 2026) and road times (OSRM), live over Kafka + Flink, with ML for demand, ETA and surge.
 
+**[▶ Watch a recorded evening in your browser](https://vivekkn001.github.io/RideSync/)**: Wednesday 15 July 2026,
+17:00-20:00, 400 drivers, optimal matching every 30 s, nothing to install. Below, 18:00 at 80×:
+
+![Live map: Manhattan on 15 July 2026, 400 drivers. Waiting riders pulse pink, drivers on the way to a pickup are amber with a line to the rider, drivers with a passenger are blue, and zones short of drivers glow orange](docs/img/live_map.webp)
+
 **Contents:** [The problem](#the-problem) · [What RideSync does](#what-ridesync-does) ·
 [Architecture](#architecture) · [Tech stack](#tech-stack) · [Quick start](#quick-start) · [Results](#results) ·
-[Limitations](#limitations) · [Deep dives](#decisions) · [Layout](#layout) · [Run everything](#run)
+[Limitations](#limitations) · [Deep dives](#decisions) · [Public demo](#public-demo-m9) · [Layout](#layout) ·
+[Run everything](#run)
 
 ## The problem
 
@@ -97,6 +103,7 @@ python -m venv .venv
 pip install -e ".[dev]"
 pytest                                 # ~800 tests; those needing data, models, Kafka or Postgres skip themselves
 python experiments/m1_batching.py      # batching vs greedy in a synthetic city: no downloads, no Docker
+copy .env.example .env                 # Linux/macOS: cp; then change the passwords (Docker reads them)
 ```
 
 From there, [Run](#run) goes milestone by milestone: download the real data, start the road network, run live
@@ -133,7 +140,7 @@ caveats: [`experiments/FINDINGS.md`](experiments/FINDINGS.md).
 | M6 | ML: demand forecast, ETA correction (live traffic, ranges), fare fit, surge policy + elasticity | done |
 | M7 | Idle-driver repositioning: drift baseline vs coordinated plan (offline) | done |
 | M8 | 31 months of TLC data (2024-01..2026-07), models tested on July 2026, experiments on 3 more days and at full scale | done: recent data below |
-| M9 | Free public demo: recorded video, static replay on GitHub Pages, full stack over a tunnel | next |
+| M9 | Free public demo: replay on GitHub Pages, in-process demo mode, sharing over a tunnel, locked-down stack | done: public demo below |
 | M10 | Repositioning in live mode | planned |
 
 ## Limitations
@@ -213,7 +220,7 @@ a short tail showing their direction; drivers on the way to a pickup are amber, 
 riders pulse, pink turning red as the wait nears their patience. A green ripple marks a match and a red cross a
 cancellation. Zones glow orange when requests outnumbered free drivers in the last closed minute (from Flink).
 Each layer can be hidden from the legend. (This screenshot came from an in-memory run without Kafka or Flink,
-with the per-zone counts computed in-process.)
+with the per-zone counts computed in-process: since M9 that is `python -m ridesync.web --demo`.)
 
 ![Live map](docs/img/live_map.png)
 
@@ -296,6 +303,38 @@ running and surge priced by the separate pricing service (`--surge forecast --pr
 - **Reproducing M2–M7.** `--train 2024-03-01:2024-03-21 --test 2024-03-22:2024-03-31 --report m6` with
   `data/processed/calibration_2024-03.json` as the calibration, and the `M6_SLICE` day in `ridesync.data.slices`.
 
+## Public demo (M9)
+
+Three ways to show the system, all free:
+
+| | What runs | Command |
+|---|---|---|
+| **Recorded replay** on [GitHub Pages](https://vivekkn001.github.io/RideSync/) | The live map playing a file, in the browser. Always on. | `python -m ridesync.web.record` → `docs/demo/` |
+| **Demo mode** | Simulator, matcher and Flink's feature code in one process; no Kafka or Docker | `python -m ridesync.web --demo` |
+| **Share the live stack** | Cloudflare quick tunnels from this laptop: the map and a read-only Grafana | `python -m ridesync.web.share` (or `--demo`) |
+
+- **The replay is the live map.** The recorder runs the demo unpaced and stores the map's own snapshot every 5
+  simulated seconds. The page decodes the frames and feeds them to the same code that handles WebSocket frames,
+  with play/pause, 20-80× and a scrub bar. 3 hours of 400 drivers is 2,161 frames: 12 MB of JSON, **1.0 MB**
+  gzipped, because positions are integers (1 m) stored as changes since the previous frame. Recording takes ~20 s.
+  The data isn't in the repo, so the folder is built locally and committed; `.github/workflows/pages.yml` publishes it.
+- **Demo mode** is the lockstep runner (simulator and matcher over the in-memory bus) with a tick that waits for
+  the wall clock, looping. Zone pressure comes from `FeatureStream`, the reference runner the Flink job is tested
+  against, fed one message at a time.
+- **Sharing** uses quick tunnels: no account, new random `trycloudflare.com` links each start, closed on Ctrl+C.
+
+**What a visitor can reach.** Every port in `docker-compose.yml` listens on `127.0.0.1` (and `::1`) only, so the
+tunnel is the one way in, and it carries only the map and Grafana. Grafana treats visitors as Viewers. Its admin
+password and the database passwords come from `.env`. Viewers can still send any SQL through Grafana's query API,
+so the datasources connect as read-only users:
+- **ClickHouse:** `readonly=2`, `SELECT` on the `ridesync` database only, no file or system tables.
+- **Postgres:** `SELECT` only, read-only transactions, 30 s statement timeout. A session left idle inside a
+  transaction is closed after 5 s. Without that, a visitor's `BEGIN` plus a failing statement left Grafana's
+  pooled connection stuck, and every Postgres panel broke until a restart.
+
+`share` refuses to expose Grafana while the admin password is the example one or anonymous visitors can edit.
+Flink's UI stays local, because it can submit jobs.
+
 ## Layout
 
 ```
@@ -311,9 +350,13 @@ ridesync/ml/         M6 models: demand (forecast), fare (fit), eta (correction +
 ridesync/pricing.py  surge policy, rider conversion, demand estimates (shared by the simulator and live pricing)
 ridesync/reposition.py  M7 policies: drift to usual hot spots, planned rebalancing
 ridesync/live/pricing.py  live pricing service: zone-features -> zone-prices
-ridesync/web/        live map server (FastAPI + WebSocket) and page
+ridesync/web/        live map server (FastAPI + WebSocket) and page; demo (in-process run), record (static
+                     replay), share (Cloudflare tunnels)
+ridesync/env.py      settings shared with docker compose (.env)
 ridesync/viz/        replay page for offline runs
-docker/              Flink image, ClickHouse schema, Postgres schema, Grafana provisioning + dashboard generator
+docker/              Flink image, ClickHouse schema + read-only user, Postgres schema + roles, Grafana
+                     provisioning + dashboard generator
+docs/demo/           the recorded replay site (GitHub Pages)
 ridesync/geo.py      Route + travel-time interface, straight-line model
 ridesync/routing/    OSRM client (table/route, chunking, cache, fallback), calibration, model factory
 ridesync/data/       downloads; TLC high-volume FHV trips -> demand slices with in-zone coordinates; monthly reduce
@@ -415,14 +458,23 @@ python -m ridesync.live.sim --speed 20 --surge forecast                  # the s
 python -m ridesync.live.pricing                                          # or: a separate pricing service (needs Flink)
 python -m ridesync.live.sim --speed 20 --surge forecast --price-service
 
-# M5: storage and screens
-docker compose --profile storage up -d                       # Grafana on http://localhost:3000
+# M5: storage and screens (passwords from .env: copy .env.example first)
+docker compose --profile storage up -d                       # Grafana on http://localhost:3000 (admin: see .env)
 # existing ClickHouse volume from before M6 (init scripts run only once):
 docker compose exec -T clickhouse clickhouse-client --multiquery < docker/clickhouse/init/02_m6.sql
+# existing volumes from before M9: set the new passwords and create Grafana's read-only Postgres role
+docker compose --profile storage exec postgres sh /docker-entrypoint-initdb.d/02_roles.sh
+docker compose --profile storage exec grafana grafana cli admin reset-admin-password <GRAFANA_ADMIN_PASSWORD>
 python -m ridesync.sinks.postgres                            # terminal: trip ledger
 python -m ridesync.web                                       # terminal: live map on http://localhost:8000
 python -m ridesync.live.matcher                              # terminal
 python -m ridesync.live.sim --speed 20                       # then watch the map and dashboards
+
+# M9: public demo
+python -m ridesync.web --demo                                # live map without Docker, http://localhost:8000
+python -m ridesync.web.record                                # re-record docs/demo (commit it; Pages publishes it)
+python -m ridesync.web.share --demo                          # public link to the demo (needs cloudflared)
+python -m ridesync.web.share                                 # public links to the full stack's map + read-only Grafana
 
 # Done for the day: stop everything (a plain `docker compose stop` only stops Kafka)
 docker compose --profile "*" stop

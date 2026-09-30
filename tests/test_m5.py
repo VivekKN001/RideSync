@@ -4,6 +4,7 @@ import uuid
 
 import pytest
 
+from ridesync.env import pg_dsn
 from ridesync.sinks.postgres import UPSERT_TRIP, statement_for, write
 from ridesync.web.app import LiveView
 
@@ -44,7 +45,7 @@ def test_ledger_upserts_never_move_a_trip_backwards():
         ev("dropped_off", 900, rider=7, driver=3),
         ev("matched", 40, rider=7, driver=3, quoted_eta_s=120.0),   # redelivered
     ]]
-    with psycopg.connect("postgresql://ridesync:ridesync@localhost:5432/ridesync", autocommit=True) as conn:
+    with psycopg.connect(pg_dsn(), autocommit=True) as conn:
         try:
             write(conn, msgs)
             row = conn.execute("SELECT status, requested_s, matched_s, picked_up_s, finished_s, driver_id, quoted_eta_s "
