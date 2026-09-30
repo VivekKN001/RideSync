@@ -12,6 +12,7 @@ import pytest
 from ridesync.env import pg_dsn, read_env_file, setting
 from ridesync.live.schema import DRIVER_EVENTS, RIDER_EVENTS
 from ridesync.sim import SimConfig, simulate, summarize
+from ridesync.stream.zones import ZONES_JSON
 from ridesync.web.app import LiveView, render_page
 from ridesync.web.demo import FeedBus, Stopped, run_once
 from ridesync.web.record import Recorder, decode, record, write_site
@@ -147,6 +148,8 @@ def test_record_writes_a_static_site(tmp_path):
     doc = record(SMALL, step_s=30.0)
     assert doc["frames"][0]["t"] <= 1 and doc["frames"][-1]["t"] <= SMALL.demand.duration_s  # first tick: t = 1 s
     assert "60 drivers" in doc["note"]
+    if not Path(ZONES_JSON).exists():
+        pytest.skip(f"no {ZONES_JSON} (python -m ridesync.stream.zones) for the site's zone outlines")
     (tmp_path / "keep.txt").write_text("mine")
     write_site(doc, tmp_path)
     assert (tmp_path / "keep.txt").read_text() == "mine"  # only its own files are touched
