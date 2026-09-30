@@ -1,6 +1,6 @@
 # M8b: the experiments on more days and at full scale
 
-Same code and settings as M2, M6 (surge) and M7, with the M8 models (trained 2025-01..2026-06) and straight-line travel calibrated on 15 July 2026. Every day is in the models' test month. 10% of Manhattan trips unless marked full scale (fleets 10x). Paired deltas, mean ± 95% CI.
+Same code and settings as M2, M6 (surge) and M7, with the M8 models (trained 2025-01..2026-06) and straight-line travel calibrated on 15 July 2026 unless marked road times (OSRM × 2.26). Every day is in the models' test month. 10% of Manhattan trips unless marked full scale (fleets 10x). Paired deltas, mean ± 95% CI.
 
 ## Batching with the cancellation-aware cost (`optimal@30s+aware`) against instant nearest-driver (M2)
 
@@ -31,6 +31,27 @@ Same code and settings as M2, M6 (surge) and M7, with the M8 models (trained 202
 | Wed 15 Jul 2026, 17-20, full scale | 4000 | 6.3% | -2.4 ± 0.0 pp | +272 ± 2.5 (+2.6%) | +13 ± 0.7 |
 | Wed 15 Jul 2026, 17-20, full scale | 4500 | 4.4% | -2.0 ± 0.2 pp | +220 ± 18.4 (+2.0%) | +10 ± 0.8 |
 | Wed 15 Jul 2026, 17-20, full scale | 5000 | 2.9% | -1.3 ± 0.1 pp | +141 ± 9.1 (+1.3%) | +12 ± 2.2 |
+| Wed 13 Mar 2024, 17-20, road times (M2) | 300 | 28.8% | -3.8 ± 0.4 pp | +43 ± 4.7 (+5.4%) | +59 ± 5.9 |
+| Wed 13 Mar 2024, 17-20, road times (M2) | 350 | 17.8% | -2.0 ± 0.3 pp | +22 ± 3.0 (+2.4%) | +39 ± 2.5 |
+| Wed 13 Mar 2024, 17-20, road times (M2) | 400 | 11.7% | -0.6 ± 0.2 pp | +6 ± 2.7 (+0.6%) | +26 ± 3.1 |
+| Wed 13 Mar 2024, 17-20, road times (M2) | 450 | 8.5% | -0.2 ± 0.3 pp | +2 ± 3.4 (+0.2%) | +20 ± 1.6 |
+| Wed 13 Mar 2024, 17-20, road times (M2) | 500 | 6.9% | -0.2 ± 0.3 pp | +2 ± 3.7 (+0.2%) | +19 ± 1.9 |
+| Wed 15 Jul 2026, 17-20, road times | 300 | 34.3% | -4.0 ± 0.6 pp | +45 ± 6.6 (+6.1%) | +61 ± 3.9 |
+| Wed 15 Jul 2026, 17-20, road times | 400 | 15.6% | -0.9 ± 0.4 pp | +10 ± 4.0 (+1.1%) | +30 ± 2.8 |
+| Wed 15 Jul 2026, 17-20, road times | 500 | 8.7% | -0.1 ± 0.2 pp | +1 ± 2.4 (+0.1%) | +23 ± 1.4 |
+
+## Learned ETA against a distance × hour table, riders cancelling on late drivers (M6)
+
+400 drivers. Lateness tolerance = median time past the quote a rider waits before cancelling.
+
+| day | tolerance | cancel % (table) | Δ cancel | Δ trips/h | abs ETA error s (table → learned) |
+|---|---|---|---|---|---|
+| Wed 13 Mar 2024 (M6) | 120 s | 35.7% | -7.7 ± 0.3 pp | +87 ± 3.8 (+12.0%) | 55 → 55 |
+| Wed 13 Mar 2024 (M6) | 180 s | 31.3% | -6.7 ± 1.1 pp | +75 ± 12.3 (+9.7%) | 67 → 61 |
+| Wed 13 Mar 2024 (M6) | 300 s | 25.5% | -3.9 ± 0.9 pp | +44 ± 10.0 (+5.3%) | 87 → 68 |
+| Wed 15 Jul 2026, 17-20 | 120 s | 41.6% | -8.1 ± 0.5 pp | +92 ± 5.8 (+13.9%) | 57 → 57 |
+| Wed 15 Jul 2026, 17-20 | 180 s | 36.3% | -5.7 ± 0.6 pp | +65 ± 7.3 (+9.0%) | 72 → 62 |
+| Wed 15 Jul 2026, 17-20 | 300 s | 31.1% | -3.3 ± 0.5 pp | +37 ± 5.8 (+4.8%) | 94 → 70 |
 
 ## Surge pricing against none, elasticity 0.5 (M6)
 

@@ -418,6 +418,7 @@ and are tested on July 2026. The simulator's straight-line speed was recalibrate
 | Demand, 15 min ahead (WAPE) | 16.9% vs 21.4% best baseline | **17.8%** vs 22.4% best baseline |
 | Demand, 60 min ahead | 18.8% vs 22.4% | **19.0%** vs 22.4% |
 | ETA correction, straight base (MAE) | 201 s vs 464 s base alone, 264 s distance x hour table | **211 s** vs 505 s base alone, 279 s distance x hour table |
+| ETA correction, OSRM base (MAPE) | 24.0% vs 40.8% OSRM alone | **24.4%** vs 44.4% OSRM alone, 34.5% distance x hour table |
 | ETA range, 10-90% | 78% of trips inside | **79.5%** inside (target 80%) |
 
 New features: month, US federal holiday and the same slot 52 weeks earlier for demand, month for the ETA.
@@ -467,6 +468,20 @@ at 500 drivers: **-7.2 pp cancellations, +76 trips/h, -45 s pickups** for +3.2 p
 the largest effect in the project. At 400 drivers -5.6 pp and +59 trips/h. In the evening it gives -2.7 pp and
 +30 trips/h at 500 (March 2024: -3.5 pp, +41), and on Saturday night -1.9 pp and +22. Drifting to the usual hot
 spots stays useless everywhere. Under scarcity (300 drivers) nobody is idle long enough to move, as in M7.
+
+**Road times repeat M2's road-time result.** Wednesday evening on OSRM (× 2.26, recalibrated on 15 July 2026),
+4 seeds: at 300 drivers batching with the cancellation-aware cost gives **-4.0 pp cancellations and +45 trips/h
+(+6.1%)**, against -3.8 pp and +5.4% on March 2024 roads and -7.3 pp and +10.9% on July straight-line times. Real
+pickups are longer (412 s instant at 300 drivers), so batching saves a smaller share. From 400 drivers it is within
+about 1 pp. Optimal against greedy on the same batches: equal at 300 and 500 drivers, +9 trips/h and -0.8 pp at 400;
+greedy is worse in 27-33% of batches by 29-39 s. At the 10% sample on real roads the solver still doesn't move
+throughput. Full tables: `results/m8b_m2_osrm_wed_pm_report.md`.
+
+**An honest ETA still pays when riders give up on late drivers.** Wednesday evening, 400 drivers, riders
+cancelling once the driver is past the quote by their tolerance: the learned ETA against the distance x hour table
+gives **+92 / +65 / +37 trips/h (+13.9% / +9.0% / +4.8%)** and -8.1 / -5.7 / -3.3 pp cancellations at median
+tolerances of 2 / 3 / 5 minutes (March 2024: +12.0% / +9.7% / +5.3%). Against one city-wide speed the learned
+ETA gains +421 / +316 / +151 trips/h.
 
 **Surge still only rations.** On all three days surge cuts cancellations (up to -12.6 pp at 300 drivers on
 Saturday night) and loses trips (-9 to -41 trips/h), with revenue up through the multiplier. The forecast arm
