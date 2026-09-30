@@ -15,6 +15,8 @@ UNROUTABLE_LAT = 40.9  # the fake server can't route to or from points at this l
 
 
 class FakeResponse:
+    status_code = 200
+
     def __init__(self, body):
         self.body = body
 
@@ -228,3 +230,30 @@ def test_replay_demand_drives_simulation(zones, tmp_path):
     assert all(r.state in (RiderState.DONE, RiderState.CANCELLED) for r in sim.riders)
     again = simulate(cfg)
     assert [r.state for r in again.riders] == [r.state for r in sim.riders]
+
+
+class GarbledOSRM(FakeOSRM):
+    """Answers with an empty body or a 502 a few times, as Docker's port proxy does under heavy load."""
+
+    def __init__(self, failures):
+        super().__init__()
+        self.failures = failures
+
+    def get(self, url, params=None, timeout=None):
+        import requests
+
+        if self.failures:
+            self.failures -= 1
+            bad = requests.Response()
+            bad.status_code = 200 if self.failures % 2 else 502
+            bad._content = b""
+            return bad
+        return super().get(url, params=params, timeout=timeout)
+
+
+def test_osrm_retries_empty_and_bad_gateway_replies():
+    m = OSRMModel(session=GarbledOSRM(failures=2))
+    assert np.isfinite(m.matrix(pts(2, 1), pts(3, 2))).all()
+    assert m.retries == 2
+    with pytest.raises(ValueError):
+        OSRMModel(session=GarbledOSRM(failures=9), max_retries=3).matrix(pts(2, 1), pts(3, 2))

@@ -63,7 +63,10 @@ def main():
     ap.add_argument("--workers", type=int, default=None)
     ap.add_argument("--arms", nargs="+", default=None, help="only these arms (immediate_greedy, the baseline, is always run)")
     ap.add_argument("--tag", default=None, help="output file prefix under experiments/results (default: m2_<travel>)")
+    ap.add_argument("--resume", action="store_true",
+                    help="keep the runs already in <tag>_runs.csv, run only the missing ones, save each as it finishes")
     args = ap.parse_args()
+    tag = args.tag or f"m2_{args.travel}"
 
     try:
         travel = travel_from_calibration(args.travel, args.osrm_url)
@@ -77,11 +80,14 @@ def main():
     })
     t0 = time.time()
     arms = [a for a in ARMS if args.arms is None or a.label in args.arms or a.label == "immediate_greedy"]
-    df = run_grid(base, arms, {"drivers.num_drivers": args.fleets}, range(args.seeds), workers=args.workers)
+    checkpoint = RESULTS / f"{tag}_runs.csv" if args.resume else None
+    if checkpoint is not None:
+        RESULTS.mkdir(exist_ok=True)
+    df = run_grid(base, arms, {"drivers.num_drivers": args.fleets}, range(args.seeds), workers=args.workers,
+                  checkpoint=checkpoint)
     print(f"{len(df)} runs in {time.time() - t0:.0f}s")
 
     observed = pd.read_parquet(args.slice)["observed_wait_s"].dropna()
-    tag = args.tag or f"m2_{args.travel}"
     RESULTS.mkdir(exist_ok=True)
     df.to_csv(RESULTS / f"{tag}_runs.csv", index=False)
     summary = paired_summary(df, "immediate_greedy", METRICS, ["drivers.num_drivers"])

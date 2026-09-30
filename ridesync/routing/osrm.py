@@ -65,18 +65,20 @@ class OSRMModel:
 
         url = f"{self.base_url}/{service}/v1/driving/{_coords(points)}"
         self.requests += 1
-        # Reused keep-alive connections are sometimes closed by the server (or Docker's port proxy)
-        # under load. Requests are idempotent GETs, so retry a few times before giving up.
+        # Under load, reused keep-alive connections are sometimes closed, and Docker's port proxy sometimes
+        # answers with an empty or cut-off body. Requests are idempotent GETs, so retry a few times.
         for attempt in range(self.max_retries + 1):
             try:
                 resp = self.session.get(url, params=params, timeout=self.timeout_s)
+                if resp.status_code >= 500:
+                    raise requests.ConnectionError(f"HTTP {resp.status_code}")
+                body = resp.json()
                 break
-            except requests.ConnectionError:
+            except (requests.ConnectionError, requests.Timeout, ValueError):  # ValueError: not JSON
                 if attempt == self.max_retries:
                     raise
                 self.retries += 1
                 time.sleep(0.05 * 2 ** attempt)
-        body = resp.json()
         code = body.get("code")
         if code in ("Ok", "NoRoute", "NoSegment"):  # the latter two are per-query outcomes, not failures
             return body

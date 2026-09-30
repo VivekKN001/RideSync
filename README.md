@@ -116,14 +116,14 @@ caveats: [`experiments/FINDINGS.md`](experiments/FINDINGS.md).
 
 | Question | Answer |
 |---|---|
-| Does batching beat instant nearest-driver? (M1, M2, M8b) | Yes, under scarcity: 30 s batches with a cancellation-aware cost give **−4 pp cancellations, +5–6% trips/h** on real roads (300 drivers, March 2024 and July 2026), and **+11% trips/h** on July 2026 evening peaks with straight-line times. The gain disappears once supply is ample, and in the morning peak it doesn't help at all. |
-| Does optimal (Hungarian) beat greedy on a batch? (M1c, M2, M8b) | At the 10% sample, only per batch (better in 30–41% of batches; trips/h within noise). **At full scale, yes**: batches hold 100–325 riders, greedy is worse in 86–91% of them, and optimal gives **+249 ± 28 trips/h and −2.2 pp cancellations** at 4,000 drivers. |
+| Does batching beat instant nearest-driver? (M1, M2, M8b) | Yes, under scarcity: 30 s batches with a cancellation-aware cost give **−4 pp cancellations, +5–6% trips/h** on real roads (300 drivers, March 2024 and July 2026), and **+11% trips/h** on July 2026 evening peaks with straight-line times. The gain disappears once supply is ample, and in the morning peak it doesn't help (on real roads it costs 2 pp more cancellations). |
+| Does optimal (Hungarian) beat greedy on a batch? (M1c, M2, M8b) | At the 10% sample, only per batch (better in 19–41% of batches; trips/h within noise, on straight-line and road times). **At full scale, yes**: batches hold 100–325 riders, greedy is worse in 86–93% of them, and optimal gives **+249 ± 28 trips/h and −2.2 pp cancellations** at 4,000 drivers; **+148 to +191 trips/h (−1.3 to −1.7 pp) on real roads**. |
 | What does going live cost? (M3) | +1.4 to +4.2 s of rider wait at 10–60× speed and nothing else. At zero latency the live path is bit-identical to offline. Tick-to-batch takes 15–22 ms p50. |
 | How long should the stream wait for late events? (M4) | 1 s cuts lost events 10×, down to 0.03%. The job waits 2 s, and nothing is silently dropped. |
 | Can we forecast demand? (M6, M8) | On July 2026, trained on 18 months: **17.8% WAPE** per zone per 15 min, against 22.4% for the best baseline; 19.0% at 60 min ahead. |
 | Does more (or newer) data help? (M8) | A little. Trained on 30 months instead of one: 18.2% → 17.7% WAPE, 220 → 212 s ETA error. Recency counts as much as 17× the volume, and a model trained on March 2024 still works two years later. |
 | How good is the ETA? (M6) | A learned correction with live traffic features: **24.0% MAPE**, against 40.8% for OSRM alone. That is at the limit of zone-level data (an oracle scores 22–29%). The 10–90% range covers 78% of trips. |
-| Does an honest ETA matter? (M6, M8b) | When riders give up on late drivers, the learned ETA adds **+5% to +12% trips/h (+44 to +87)** over a simple distance × hour table (July 2026: +5% to +14%), and +25% to +130% over one city-wide speed (tolerances of 5 to 2 min). |
+| Does an honest ETA matter? (M6, M8b) | When riders give up on late drivers, the learned ETA adds **+5% to +12% trips/h (+44 to +87)** over a simple distance × hour table (July 2026: +5% to +14%; **on road times +8% to +57%**), and +25% to +130% over one city-wide speed (tolerances of 5 to 2 min). |
 | Does surge help? (M6) | With a fixed fleet it only rations demand: fewer cancellations and shorter queues, fewer trips. The forecast doesn't beat current demand, in or out of sample. |
 | Does moving idle drivers help? (M7, M8b) | With slack (500 drivers), coordinated repositioning **halves cancellations (6.9% → 3.5%), cuts pickups 37–43 s, +4% trips/h** for +1.3–1.9 pp empty driving. In the morning peak, where commuter flows strand idle cars, it's the biggest lever in the project: **−7.2 pp cancellations, +76 trips/h**. Uncoordinated drift to hot spots doesn't help. |
 
@@ -150,8 +150,9 @@ caveats: [`experiments/FINDINGS.md`](experiments/FINDINGS.md).
 - **Zone-level data.** TLC records zones, not coordinates, so trip ends are sampled inside zone polygons. That puts
   a floor under ETA accuracy, and the M6 report measures it.
 - **One test month.** M8 tests on July 2026 only: four days (weekday morning and evening, Saturday night) and one
-  full-scale evening. Road times (OSRM) cover one evening per test month; the other days use calibrated
-  straight-line travel.
+  full-scale evening, each on straight-line and road times. At full scale on road times only 3 fleet sizes, 3
+  strategies and 2 seeds were run (a run takes 1.5-3.5 hours); the complete grid is left to run in the background
+  (`--resume`).
 - **Fixed fleet.** Drivers don't respond to prices, so surge can only ration demand (see the results).
 - **Repositioning is offline only.** The live matcher doesn't track repositioning or en-route cancellation yet
   (M10). Not reassigning riders after dispatch is a design decision (below), not a gap.
@@ -452,6 +453,12 @@ python experiments/m6_surge.py --slice data/processed/trips_2026-07-15_0700_3h_m
 python experiments/m7_reposition.py --slice data/processed/trips_2026-07-15_0700_3h_manhattan_f0.1.parquet --tag m8b_m7_wed_am
 python experiments/m2_real_demand.py --slice data/processed/trips_2026-07-15_1700_3h_manhattan_f1.parquet \
     --fleets 3000 3500 4000 4500 5000 --seeds 3 --tag m8b_m2_full
+# the same on road times (OSRM up; OSRM_THREADS=14 docker compose --profile routing up -d osrm helps), hours per
+# run: --resume saves each run as it finishes and skips the ones already saved, so it can be stopped and continued
+python experiments/m2_real_demand.py --travel osrm --slice data/processed/trips_2026-07-15_1700_3h_manhattan_f1.parquet \
+    --fleets 3000 4000 5000 --seeds 2 --arms batched_greedy@30s+aware optimal@30s+aware --tag m8b_m2_osrm_full --resume
+python experiments/m6_eta_sim.py --base osrm --tag m8b_eta_sim --late-tolerance 120 180 300 --resume
+python experiments/m8b_summary.py
 
 # M6 live: surge on the live map and dashboards
 python -m ridesync.live.sim --speed 20 --surge forecast                  # the simulator prices zones itself

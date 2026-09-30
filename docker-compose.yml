@@ -95,7 +95,7 @@ services:
     image: *osrm-image
     profiles: ["routing"]
     command: >
-      osrm-routed --algorithm mld --max-table-size 1000 --threads 8 /data/nyc.osrm
+      osrm-routed --algorithm mld --max-table-size 1000 --threads ${OSRM_THREADS:-8} /data/nyc.osrm
     volumes:
       - ./data/osm:/data:ro
     ports:

@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import itertools
 import os
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Sequence
+from pathlib import Path
+from typing import Dict, Iterable, List, Optional, Sequence, Union
 
 import numpy as np
 import pandas as pd
@@ -33,19 +34,46 @@ def _run(job) -> dict:
     return row
 
 
+def _norm(v):
+    """Grid values as they come back from a CSV: numbers compare as floats."""
+    return float(v) if isinstance(v, (int, float, np.number)) and not isinstance(v, bool) else v
+
+
 def run_grid(
     base: SimConfig,
     arms: Sequence[Arm],
     grid: Dict[str, Iterable],
     seeds: Iterable[int],
-    workers: int | None = None,
+    workers: Optional[int] = None,
+    checkpoint: Union[str, Path, None] = None,
 ) -> pd.DataFrame:
+    """Every arm x grid point x seed, in parallel. Rows come back in that order.
+
+    ``checkpoint`` is a CSV of finished runs: runs already in it are skipped, and each new run is appended
+    the moment it finishes. A long grid (hours of OSRM at full scale) can then be stopped and resumed,
+    and a crash loses only the runs in flight.
+    """
     keys = list(grid)
     points = [dict(zip(keys, values)) for values in itertools.product(*grid.values())]
     jobs = [(base, arm, point, seed) for arm in arms for point in points for seed in seeds]
-    with ProcessPoolExecutor(max_workers=workers or os.cpu_count()) as pool:
-        rows = list(pool.map(_run, jobs, chunksize=1))
-    return pd.DataFrame(rows)
+    key = lambda label, point, seed: (label, *(_norm(point[k]) for k in keys), _norm(seed))  # noqa: E731
+
+    done: Dict[tuple, dict] = {}
+    path = Path(checkpoint) if checkpoint is not None else None
+    if path is not None and path.exists() and path.stat().st_size > 0:
+        for r in pd.read_csv(path).to_dict("records"):
+            done[key(r["arm"], r, r["seed"])] = r
+    todo = [j for j in jobs if key(j[1].label, j[2], j[3]) not in done]
+    if todo:
+        with ProcessPoolExecutor(max_workers=workers or os.cpu_count()) as pool:
+            futures = [pool.submit(_run, j) for j in todo]
+            for f in as_completed(futures):
+                row = f.result()
+                done[key(row["arm"], row, row["seed"])] = row
+                if path is not None:
+                    new = not path.exists() or path.stat().st_size == 0
+                    pd.DataFrame([row]).to_csv(path, mode="a", header=new, index=False)
+    return pd.DataFrame([done[key(arm.label, point, seed)] for _, arm, point, seed in jobs])
 
 
 def paired_summary(

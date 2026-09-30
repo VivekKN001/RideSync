@@ -9,6 +9,7 @@ March 2024 for reference, and writes experiments/results/m8b_summary_report.md.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 
@@ -28,14 +29,28 @@ def _pm(row, col: str, scale: float = 1.0, fmt: str = "{:+.1f}") -> str:
     return f"{fmt.format(row['d_' + col] * scale)} ± {row['ci_' + col] * scale:.1f}"
 
 
-def m2_rows(s: pd.DataFrame, label: str) -> list:
+def _per_seed(runs: pd.DataFrame, arm: str, baseline: str, n: int, col: str, scale: float = 1.0,
+              fmt: str = "{:+.1f}") -> str:
+    """Each seed's paired delta, "a / b": with 2 seeds a 95% interval says nothing, so show both."""
+    g = runs[runs["drivers.num_drivers"] == n].pivot_table(index="seed", columns="arm", values=col)
+    return " / ".join(fmt.format(v * scale) for v in (g[arm] - g[baseline]))
+
+
+def m2_rows(s: pd.DataFrame, label: str, runs: Optional[pd.DataFrame] = None) -> list:
+    """``runs`` (the runs CSV) switches to per-seed deltas when it has fewer than 3 seeds."""
+    few = runs is not None and runs["seed"].nunique() < 3
     out = []
     for n in sorted(s["drivers.num_drivers"].unique()):
         base = s[(s["arm"] == "immediate_greedy") & (s["drivers.num_drivers"] == n)].iloc[0]
         r = s[(s["arm"] == BEST) & (s["drivers.num_drivers"] == n)].iloc[0]
-        out.append(f"| {label} | {n} | {base['cancel_rate']:.1%} | {_pm(r, 'cancel_rate', 100)} pp | "
-                   f"{_pm(r, 'completed_per_hour', 1, '{:+.0f}')} ({r['d_completed_per_hour'] / base['completed_per_hour']:+.1%}) | "
-                   f"{_pm(r, 'wait_all_mean_s', 1, '{:+.0f}')} |")
+        rel = f"({r['d_completed_per_hour'] / base['completed_per_hour']:+.1%})"
+        if few:
+            d = lambda col, scale=1.0, fmt="{:+.1f}": _per_seed(runs, BEST, "immediate_greedy", n, col, scale, fmt)  # noqa: E731
+            out.append(f"| {label} | {n} | {base['cancel_rate']:.1%} | {d('cancel_rate', 100)} pp (per seed) | "
+                       f"{d('completed_per_hour', 1, '{:+.0f}')} {rel} | {d('wait_all_mean_s', 1, '{:+.0f}')} |")
+        else:
+            out.append(f"| {label} | {n} | {base['cancel_rate']:.1%} | {_pm(r, 'cancel_rate', 100)} pp | "
+                       f"{_pm(r, 'completed_per_hour', 1, '{:+.0f}')} {rel} | {_pm(r, 'wait_all_mean_s', 1, '{:+.0f}')} |")
     return out
 
 
@@ -52,17 +67,45 @@ def main() -> None:
     for key, label in [("m2_straight", "Wed 13 Mar 2024, 17-20 (M2)"), *[(f"m8b_m2_{d}", v) for d, v in DAYS.items()],
                        ("m8b_m2_full", "Wed 15 Jul 2026, 17-20, full scale"),
                        ("m2_osrm", "Wed 13 Mar 2024, 17-20, road times (M2)"),
-                       ("m8b_m2_osrm_wed_pm", "Wed 15 Jul 2026, 17-20, road times")]:
+                       *[(f"m8b_m2_osrm_{d}", f"{v}, road times") for d, v in DAYS.items()],
+                       ("m8b_m2_osrm_full", "Wed 15 Jul 2026, 17-20, full scale, road times")]:
         s = _read(key)
         if s is not None:
-            lines += m2_rows(s, label)
+            runs = RESULTS / f"{key}_runs.csv"
+            lines += m2_rows(s, label, pd.read_csv(runs) if runs.exists() else None)
+
+    lines += ["", "## Optimal against greedy on the same 30 s batches and cost, full scale", "",
+              "Paired `optimal@30s+aware` − `batched_greedy@30s+aware`. With 2 seeds each seed's delta is shown, "
+              "not an interval.", "",
+              "| travel | drivers | seeds | Δ trips/h | Δ cancel | Δ wait_all s | batches where greedy is worse |",
+              "|---|---|---|---|---|---|---|"]
+    for key, label in [("m8b_m2_full", "straight-line"), ("m8b_m2_osrm_full", "road times (OSRM)")]:
+        p = RESULTS / f"{key}_runs.csv"
+        if not p.exists():
+            continue
+        df = pd.read_csv(p)
+        s = paired_summary(df, "batched_greedy@30s+aware", ["completed_per_hour", "cancel_rate", "wait_all_mean_s",
+                                                            "shadow_worse_batches_frac"], ["drivers.num_drivers"])
+        for _, r in s[s["arm"] == BEST].sort_values("drivers.num_drivers").iterrows():
+            n_drivers = r["drivers.num_drivers"]
+            n = df[(df["arm"] == BEST) & (df["drivers.num_drivers"] == n_drivers)]["seed"].nunique()
+            if n < 3:
+                d = lambda col, scale=1.0, fmt="{:+.1f}": _per_seed(df, BEST, "batched_greedy@30s+aware", n_drivers,  # noqa: E731
+                                                                    col, scale, fmt)
+                cells = (f"{d('completed_per_hour', 1, '{:+.0f}')} (per seed) | {d('cancel_rate', 100)} pp | "
+                         f"{d('wait_all_mean_s', 1, '{:+.0f}')}")
+            else:
+                cells = (f"{_pm(r, 'completed_per_hour', 1, '{:+.0f}')} | {_pm(r, 'cancel_rate', 100)} pp | "
+                         f"{_pm(r, 'wait_all_mean_s', 1, '{:+.0f}')}")
+            lines.append(f"| {label} | {n_drivers} | {n} | {cells} | {r['shadow_worse_batches_frac']:.0%} |")
 
     lines += ["", "## Learned ETA against a distance × hour table, riders cancelling on late drivers (M6)", "",
               "400 drivers. Lateness tolerance = median time past the quote a rider waits before cancelling.", "",
               "| day | tolerance | cancel % (table) | Δ cancel | Δ trips/h | abs ETA error s (table → learned) |",
               "|---|---|---|---|---|---|"]
     tol = "riders.lateness_tolerance_median_s"
-    for key, label in [("m6_eta_sim_straight_late", "Wed 13 Mar 2024 (M6)"), ("m8b_eta_sim_straight_late", DAYS["wed_pm"])]:
+    for key, label in [("m6_eta_sim_straight_late", "Wed 13 Mar 2024 (M6)"), ("m8b_eta_sim_straight_late", DAYS["wed_pm"]),
+                       ("m8b_eta_sim_osrm_late", f"{DAYS['wed_pm']}, road times")]:
         p = RESULTS / f"{key}_runs.csv"
         if not p.exists():
             continue

@@ -66,6 +66,8 @@ def main():
     ap.add_argument("--tag", default=None, help="output file prefix under experiments/results (default: m6_eta_sim)")
     ap.add_argument("--late-tolerance", type=float, nargs="*", default=[],
                     help="median lateness tolerances (s); turns on riders.enroute_cancel")
+    ap.add_argument("--resume", action="store_true",
+                    help="keep the runs already in the runs CSV, run only the missing ones, save each as it finishes")
     args = ap.parse_args()
 
     model_path = MODEL_PATH.format(base=args.base)
@@ -98,10 +100,11 @@ def main():
         Arm("learned_eta", {"belief": replace(base_travel, eta_model=model_path)}),
     ]
     t0 = time.time()
-    df = run_grid(base, arms, grid, range(args.seeds), workers=args.workers)
-    print(f"{len(df)} runs in {time.time() - t0:.0f}s")
-    RESULTS.mkdir(exist_ok=True)
     tag = args.tag or "m6_eta_sim"
+    RESULTS.mkdir(exist_ok=True)
+    checkpoint = RESULTS / f"{tag}_{args.base}{suffix}_runs.csv" if args.resume else None
+    df = run_grid(base, arms, grid, range(args.seeds), workers=args.workers, checkpoint=checkpoint)
+    print(f"{len(df)} runs in {time.time() - t0:.0f}s")
     df.to_csv(RESULTS / f"{tag}_{args.base}{suffix}_runs.csv", index=False)
     summaries = {b: paired_summary(df, b, METRICS, list(grid)) for b in ("global_multiplier", "dist_hour_table")}
 

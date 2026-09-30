@@ -7,6 +7,7 @@ import threading
 import time
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from ridesync.env import pg_dsn, read_env_file, setting
@@ -164,3 +165,24 @@ def test_page_modes_leave_no_placeholders():
     assert not re.search(r"__[A-Z]+__", live)
     assert 'const REPLAY = ""' in live
     assert 'href="http://localhost:3000"' in live and "Flink UI" not in live
+
+
+# ------------------------------------------------------- resumable grids
+def test_run_grid_resumes_from_its_checkpoint(tmp_path):
+    from ridesync.experiments import Arm, run_grid
+
+    base = SMALL.with_(**{"demand.duration_s": 600.0, "drivers.num_drivers": 30})
+    arms = [Arm("greedy", {"dispatch.strategy": "global_greedy"}), Arm("lsa", {})]
+    grid = {"drivers.num_drivers": [20, 30]}
+    ckpt = tmp_path / "runs.csv"
+    first = run_grid(base, arms, grid, range(1), workers=2, checkpoint=ckpt)
+    assert len(pd.read_csv(ckpt)) == 4
+    # a stopped run: the checkpoint lost one row; resuming adds it and the new seed, nothing else
+    pd.read_csv(ckpt).iloc[:3].to_csv(ckpt, index=False)
+    resumed = run_grid(base, arms, grid, range(2), workers=2, checkpoint=ckpt)
+    assert len(pd.read_csv(ckpt)) == 8
+    fresh = run_grid(base, arms, grid, range(2), workers=2)
+    cols = ["arm", "seed", "drivers.num_drivers", "completed", "cancel_rate", "wait_all_mean_s"]
+    pd.testing.assert_frame_equal(resumed[cols].reset_index(drop=True), fresh[cols].reset_index(drop=True),
+                                  check_dtype=False)
+    assert first[cols].equals(fresh[fresh["seed"] == 0][cols].reset_index(drop=True))

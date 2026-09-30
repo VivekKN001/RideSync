@@ -477,11 +477,33 @@ about 1 pp. Optimal against greedy on the same batches: equal at 300 and 500 dri
 greedy is worse in 27-33% of batches by 29-39 s. At the 10% sample on real roads the solver still doesn't move
 throughput. Full tables: `results/m8b_m2_osrm_wed_pm_report.md`.
 
+**The other two days on road times tell the same two-peak story.** Same grid (300-500 drivers, 4 seeds):
+- **Saturday night** behaves like an evening peak: at 300 drivers **-4.2 pp cancellations and +50 trips/h (+6.9%)**,
+  +23 trips/h at 400, gone by 500 (+0.5%).
+- **Wednesday morning** is the flow problem again, and road times make it clearer. Batching doesn't help at 300 drivers
+  (-0.6 ± 0.7 pp, +7 ± 7 trips/h), and from 400 drivers it **hurts: +2.1 to +2.3 pp cancellations, -22 to -24 trips/h**
+  (-0.5 to -1.0 pp with straight-line times). With 31-43% of drivers idle and 22-25% of riders still cancelling, the
+  cars are in the wrong places, and waiting 30 s for a batch only adds to long road pickups (299-321 s).
+- Optimal against greedy on the same batches stays within ±10 trips/h on every day at this sample (greedy worse in
+  19-33% of batches).
+
+Tables: `results/m8b_m2_osrm_{wed_am,sat_night}_report.md`.
+
 **An honest ETA still pays when riders give up on late drivers.** Wednesday evening, 400 drivers, riders
 cancelling once the driver is past the quote by their tolerance: the learned ETA against the distance x hour table
 gives **+92 / +65 / +37 trips/h (+13.9% / +9.0% / +4.8%)** and -8.1 / -5.7 / -3.3 pp cancellations at median
 tolerances of 2 / 3 / 5 minutes (March 2024: +12.0% / +9.7% / +5.3%). Against one city-wide speed the learned
 ETA gains +421 / +316 / +151 trips/h.
+
+**On road times the honest ETA matters far more.** The same experiment with OSRM as the base (the learned
+correction trained on OSRM, 24.4% MAPE): the learned ETA against the distance x hour table gives **+231 / +159 / +55
+trips/h (+57% / +31% / +8%)** and -20.4 / -14.1 / -4.9 pp cancellations at tolerances of 2 / 3 / 5 minutes, and
++377 / +288 / +113 trips/h against one city-wide multiplier. Road-based quotes without the correction are further off
+(|error| 81-145 s for the table against 64-78 s for the learned ETA), so riders who give up on late drivers punish
+them harder. Without late-driver cancellations the learned ETA *loses* 67 trips/h against the table, the same artifact
+as in M6: the table quotes 194 s too early on average, which costs nothing when riders can't cancel on a late driver,
+while an honest quote makes some riders decline a long wait.
+Tables: `results/m8b_eta_sim_osrm{,_late}_report.md`.
 
 **Surge still only rations.** On all three days surge cuts cancellations (up to -12.6 pp at 300 drivers on
 Saturday night) and loses trips (-9 to -41 trips/h), with revenue up through the multiplier. The forecast arm
@@ -510,6 +532,22 @@ greedy is worse in 86-91% of them, and it shows in the outcome. Optimal against 
 Under deep scarcity every driver is taken either way; with some slack, large batches give greedy's early bad
 choices room to cascade. The case for the Hungarian algorithm is throughput after all, at the scale a real
 platform runs at.
+
+**It holds on real roads, about two-thirds as strong.** The same evening at full scale on OSRM (× 2.26), 3,000 /
+4,000 / 5,000 drivers, 2 seeds (each seed's delta shown; both agree in sign everywhere):
+
+| drivers | optimal − batched greedy, trips/h | Δ cancel | optimal − instant, trips/h | batches where greedy is worse |
+|---|---|---|---|---|
+| 3,000 | +28 / +22 | −0.3 / −0.2 pp | +822 / +834 (+10.1%) | 93% |
+| 4,000 | **+191 / +148 (+1.6%)** | **−1.7 / −1.3 pp** | +202 / +161 (+1.8%) | 88% |
+| 5,000 | +91 / +112 (+1.0%) | −0.8 / −1.0 pp | +92 / +125 (+1.0%) | 87% |
+
+Straight-line on the same seeds: +251 at 4,000 and +135 at 5,000. The peak didn't move: 4,000 drivers is still where
+optimal pays most. Real pickups are longer (instant: 240 s at 4,000 drivers against 203 s straight-line), so a
+better assignment saves a smaller share of each trip. At 4,000 and 5,000 drivers **batched greedy is no better than
+instant** (+7 to +12 trips/h); the whole gain of batching there comes from solving the batch optimally. Each run
+took 1.5-3.5 hours (OSRM tables for 100-300 riders every 30 s), which is why this grid is smaller than the
+straight-line one. Tables: `results/m8b_m2_osrm_full_report.md`, `results/m8b_summary_report.md`.
 
 **Framing:** "Two peaks, two problems. In the evening many riders compete for the same drivers, and batched
 matching with a cancellation-aware cost is the lever (+11% trips at 300 drivers). In the morning, commuter flows
