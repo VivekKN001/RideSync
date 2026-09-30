@@ -28,6 +28,13 @@ def setting(name: str, default: Optional[str] = None, path: Path = Path(".env"))
     return os.environ.get(name) or read_env_file(path).get(name) or default
 
 
+# Where the trained models and the travel calibration live. A backtest trains one set per test month and
+# points these at it (RIDESYNC_MODELS=data/models_2026-01 ...); every process, including experiment workers,
+# reads them at import time.
+MODELS_DIR = setting("RIDESYNC_MODELS", "data/models")
+CALIBRATION = setting("RIDESYNC_CALIBRATION", "data/processed/calibration.json")
+
+
 def pg_dsn() -> str:
     """The trip ledger's DSN: RIDESYNC_PG_DSN, else the compose Postgres with RIDESYNC_DB_PASSWORD."""
     dsn = setting("RIDESYNC_PG_DSN")

@@ -12,7 +12,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Sequence, Tuple
 
-MODELS = Path("data/models")
+from ..env import MODELS_DIR
+
+MODELS = Path(MODELS_DIR)
 RAW = Path("data/raw")
 MONTHLY = Path("data/monthly")
 LOOKUP_CSV = RAW / "taxi_zone_lookup.csv"

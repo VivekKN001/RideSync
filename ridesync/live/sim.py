@@ -21,6 +21,7 @@ from typing import Dict
 
 import numpy as np
 
+from ..env import MODELS_DIR
 from ..data.slices import DEFAULT_SLICE
 from ..matching import CancelBelief, CostParams
 from ..routing import travel_from_calibration
@@ -77,7 +78,7 @@ def config_from_args(args) -> SimConfig:
         from dataclasses import replace
 
         cfg = cfg.with_(travel=replace(cfg.travel, eta_model=args.eta_model))  # world and matcher both
-    fare = Path("data/models/fare.json")
+    fare = Path(f"{MODELS_DIR}/fare.json")
     if fare.exists():
         from ..ml.fare import fare_from_file
 

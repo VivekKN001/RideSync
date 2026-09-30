@@ -24,6 +24,7 @@ from pathlib import Path
 
 import numpy as np
 
+from ridesync.env import MODELS_DIR
 from ridesync.ml.common import Period, load_counts, load_table, service_zones
 from ridesync.ml.demand import buckets_of, evaluate, fit
 from ridesync.ml.eta import FACTOR_CLIP, _errors, _fit, base_matrix, place_trips, zone_points
@@ -63,7 +64,7 @@ def eta(max_iter: int, seed: int) -> list:
     tcfg = travel_from_calibration("straight")
     pts = zone_points(zones)
     sig = f"{tcfg.speed_mps:.4f}_{tcfg.detour:.2f}"
-    P = base_matrix(pts[["lat", "lon"]].to_numpy(), make_travel_model(tcfg), cache=f"data/models/pool_straight_{sig}.npy")
+    P = base_matrix(pts[["lat", "lon"]].to_numpy(), make_travel_model(tcfg), cache=f"{MODELS_DIR}/pool_straight_{sig}.npy")
     trips = load_table(Period.parse(f"2024-01:{TEST}").months(), "eta")
     s = place_trips(trips, pts, P, zones, np.zeros(len(trips), bool), seed)
     t = trips["request_datetime"]

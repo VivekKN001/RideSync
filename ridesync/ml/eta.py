@@ -27,12 +27,13 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from ..env import MODELS_DIR
 from ..geo import Route, TravelTimeModel, haversine_m, haversine_pairs_m
 
 FEATURES = ["log_base_s", "log_dist_m", "pu_zone", "do_zone", "hour", "dow", "month"]
 TRAFFIC_FEATURES = ["city_mph_30", "city_trips_30", "pu_mph_60", "do_mph_60"]
 CATEGORICAL = [FEATURES.index("pu_zone"), FEATURES.index("do_zone")]
-MODEL_PATH = "data/models/eta_{base}.joblib"
+MODEL_PATH = MODELS_DIR + "/eta_{base}.joblib"
 POINTS_PATH = "data/models/zone_points.parquet"
 FACTOR_CLIP = (0.4, 4.0)  # a prediction outside this is a model error, not traffic
 
@@ -499,7 +500,7 @@ def train(base_kind: str = "straight", train_spec: str = "2025-01:2026-06", test
     base = make_travel_model(tcfg)
     pts = zone_points(zones)
     sig = f"{tcfg.speed_mps:.4f}_{tcfg.detour:.2f}" if base_kind == "straight" else f"{tcfg.time_multiplier:.4f}"
-    P = base_matrix(pts[["lat", "lon"]].to_numpy(), base, cache=f"data/models/pool_{base_kind}_{sig}.npy")  # per calibration
+    P = base_matrix(pts[["lat", "lon"]].to_numpy(), base, cache=f"{MODELS_DIR}/pool_{base_kind}_{sig}.npy")  # per calibration
 
     trips = load_table(tr.months() + te.months(), "eta")
     t = trips["request_datetime"]

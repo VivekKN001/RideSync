@@ -24,6 +24,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
+from ..env import MODELS_DIR
+
 import numpy as np
 
 BUCKET_S = 900.0
@@ -33,7 +35,7 @@ PER_YEAR = 52 * PER_WEEK  # 364 days: the same weekday a year before
 HORIZONS = (1, 2, 4)
 FEATURES = ["lag1", "lag2", "lag3", "lag4", "mean4", "yday", "lweek", "lyear", "zone", "tod", "dow", "month", "holiday"]
 ZONE_COL = FEATURES.index("zone")
-MODEL_PATH = "data/models/demand.joblib"
+MODEL_PATH = f"{MODELS_DIR}/demand.joblib"
 
 
 # ------------------------------------------------------------------ features

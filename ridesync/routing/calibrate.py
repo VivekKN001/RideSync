@@ -18,9 +18,10 @@ from typing import Optional, Sequence
 import numpy as np
 import pandas as pd
 
+from ..env import CALIBRATION
 from ..geo import haversine_pairs_m
 
-OUT = Path("data/processed/calibration.json")
+OUT = Path(CALIBRATION)
 
 
 def calibrate_straight(trips: pd.DataFrame, detour: float = 1.35) -> dict:

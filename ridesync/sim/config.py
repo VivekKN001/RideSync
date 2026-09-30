@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Optional, Tuple
 
+from ..env import MODELS_DIR
 from ..matching.problem import CostParams
 
 
@@ -153,7 +154,7 @@ class PricingConfig:
     retry: bool = True
     retry_median_s: float = 180.0
     retry_sigma: float = 0.5
-    forecast_path: str = "data/models/demand.joblib"
+    forecast_path: str = f"{MODELS_DIR}/demand.joblib"
     zones_path: str = "data/processed/taxi_zones.json"
 
 
@@ -180,7 +181,7 @@ class RepositionConfig:
     max_move_s: float = 600.0
     max_share: float = 0.5
     hot_quantile: float = 0.75
-    forecast_path: str = "data/models/demand.joblib"
+    forecast_path: str = f"{MODELS_DIR}/demand.joblib"
     zones_path: str = "data/processed/taxi_zones.json"
     points_path: str = "data/models/zone_points.parquet"
 

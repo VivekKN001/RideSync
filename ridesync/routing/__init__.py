@@ -10,7 +10,7 @@ if TYPE_CHECKING:  # the sim package imports this module, so no runtime import b
     from ..sim.config import TravelConfig
 
 
-CALIBRATION = "data/processed/calibration.json"
+from ..env import CALIBRATION  # noqa: E402  (RIDESYNC_CALIBRATION overrides the path)
 
 
 def travel_from_calibration(kind: str, osrm_url: str = "http://localhost:5000", path: str = CALIBRATION) -> "TravelConfig":

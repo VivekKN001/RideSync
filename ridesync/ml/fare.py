@@ -18,10 +18,11 @@ from pathlib import Path
 
 import numpy as np
 
+from ..env import MODELS_DIR
 from ..pricing import fares  # noqa: F401  (re-exported)
 from ..sim.config import FareConfig
 
-FARE_PATH = "data/models/fare.json"
+FARE_PATH = f"{MODELS_DIR}/fare.json"
 
 
 def fare_from_file(path: str = FARE_PATH) -> FareConfig:

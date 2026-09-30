@@ -25,6 +25,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from ridesync.env import MODELS_DIR
 from ridesync.data.slices import run_start_and_frac
 from ridesync.experiments import Arm, paired_summary, run_grid
 from ridesync.matching import CancelBelief, CostParams
@@ -96,7 +97,7 @@ def main():
         "dispatch.strategy": "lsa", "dispatch.interval_s": 30.0, "dispatch.cost": AWARE, "dispatch.max_candidates": 20,
         "riders.enroute_cancel": True, "travel.noise_sigma": NOISE,
     })
-    fare = Path("data/models/fare.json")
+    fare = Path(f"{MODELS_DIR}/fare.json")
     if fare.exists():
         from ridesync.ml.fare import fare_from_file
 
