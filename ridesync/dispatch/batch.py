@@ -31,6 +31,7 @@ class DriverState(Enum):
     EN_ROUTE = "en_route"
     ON_TRIP = "on_trip"
     REPOSITIONING = "repositioning"  # M7: driving empty toward demand; free to dispatch on the way
+    OFFLINE = "offline"              # M6b: a reserve driver not working right now; never dispatched
 
 
 class DriverView(Protocol):

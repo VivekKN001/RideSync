@@ -187,6 +187,38 @@ class RepositionConfig:
 
 
 @dataclass(frozen=True)
+class SupplyConfig:
+    """Drivers who respond to surge prices (M6b). Off by default: the fleet is fixed and nothing changes.
+
+    No public data gives the size of either response, so both are parameters to vary, like rider elasticity.
+    They act at every price update and need ``pricing.enabled``.
+
+    - Logging on: ``reserve_share`` x ``drivers.num_drivers`` extra drivers start offline, placed like the
+      fleet. At each price update an offline driver whose zone is surged at multiplier m logs on with
+      probability 1 - m^-``log_on_elasticity``, after a delay (lognormal, median ``log_on_delay_s``). A reserve
+      driver who has been idle for ``log_off_idle_s`` in an unsurged zone logs off where it is.
+    - Chasing: a driver idle for at least ``chase_min_idle_s`` heads for the highest-priced zone it can reach
+      within ``chase_max_s`` whose price beats its own zone's by at least one step, with probability
+      ``chase_strength`` x the price difference (capped at 1). It moves like M7 repositioning: it can be
+      dispatched on the way, and the drive counts as empty driving.
+    """
+
+    reserve_share: float = 0.0
+    log_on_elasticity: float = 0.0
+    log_on_delay_s: float = 300.0
+    log_on_delay_sigma: float = 0.5
+    log_off_idle_s: float = 1200.0
+    chase_strength: float = 0.0
+    chase_min_idle_s: float = 60.0
+    chase_max_s: float = 600.0
+    points_path: str = "data/models/zone_points.parquet"
+
+    @property
+    def enabled(self) -> bool:
+        return (self.reserve_share > 0 and self.log_on_elasticity > 0) or self.chase_strength > 0
+
+
+@dataclass(frozen=True)
 class SimConfig:
     seed: int = 0
     city: CityConfig = field(default_factory=CityConfig)
@@ -200,6 +232,7 @@ class SimConfig:
     pricing: PricingConfig = field(default_factory=PricingConfig)
     fare: FareConfig = field(default_factory=FareConfig)
     reposition: RepositionConfig = field(default_factory=RepositionConfig)
+    supply: SupplyConfig = field(default_factory=SupplyConfig)
 
     def with_(self, **overrides) -> "SimConfig":
         """Override nested fields with dotted keys, e.g. ``with_(**{"dispatch.interval_s": 2})``."""

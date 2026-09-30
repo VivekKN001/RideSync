@@ -52,7 +52,8 @@ def summarize(sim: Simulation) -> Dict[str, float]:
     n_open = len(opened)
 
     total = {s: sum(d.time_in[s] for d in sim.drivers) for s in DriverState}
-    driver_time = sum(total.values()) or 1.0
+    # Online time only: offline reserve drivers (M6b) aren't working. Without a reserve that's every driver.
+    driver_time = sum(v for s, v in total.items() if s is not DriverState.OFFLINE) or 1.0
     st = sim.stats
 
     return {
@@ -98,19 +99,26 @@ def summarize(sim: Simulation) -> Dict[str, float]:
         "eta_abs_error_mean_s": _mean(np.abs(eta_err)),
         "eta_late_2min_frac": _mean(eta_err > 120.0),
         # M7: repositioning. Moves started in the window; distance along the route actually driven.
-        **_moves(sim, lo, hi, hours),
+        **_moves(sim, lo, hi, hours, driver_time / 3600.0),
         "driver_reposition_frac": total[DriverState.REPOSITIONING] / driver_time,
+        # M6b: supply response. Online drivers on average, gross fares per online driver-hour.
+        "drivers_online_mean": driver_time / (hi - lo) if hi > lo else float("nan"),
+        "earnings_per_online_hour": float((fare * price).sum()) / (driver_time / 3600.0),
+        "reserve_logons": float(sim.logons),
+        "reserve_logoffs": float(sim.logoffs),
     }
 
 
-def _moves(sim: Simulation, lo: float, hi: float, hours: float) -> Dict[str, float]:
+def _moves(sim: Simulation, lo: float, hi: float, hours: float, online_h: float) -> Dict[str, float]:
     moves = [m for m in sim.moves if lo <= m["t0"] < hi]
+    chases = sum(m.get("kind") == "chase" for m in moves)
     # The straight-line model draws a straight path; scale it to road distance like the fares do.
     scale = sim.cfg.fare.road_factor if sim.cfg.travel.model == "straight" else 1.0
     km = sum(_driven_m(m["route"], m["end_t"] - m["t0"]) for m in moves) * scale / 1000.0
     n = len(moves)
     return {
-        "moves_per_driver_hour": n / (len(sim.drivers) * hours) if hours else float("nan"),
+        "moves_per_driver_hour": n / online_h if hours else float("nan"),
+        "chase_moves_per_hour": chases / hours if hours else float("nan"),
         "reposition_km_per_hour": km / hours if hours else float("nan"),
         "moves_dispatched_frac": sum(m["dispatched"] for m in moves) / n if n else float("nan"),
         "move_planned_mean_s": _mean(np.array([m["planned_s"] for m in moves])),

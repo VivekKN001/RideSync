@@ -61,6 +61,8 @@ class LiveSimulation(Simulation):
             raise ValueError("riders.enroute_cancel is offline only: the live matcher doesn't model it yet")
         if cfg.reposition.policy != "none":
             raise ValueError("repositioning is offline only: the live matcher doesn't track repositioning drivers")
+        if cfg.supply.enabled:
+            raise ValueError("driver supply response is offline only (M10 brings it live)")
         super().__init__(cfg, travel)
         self.live = live
         self.bus = bus

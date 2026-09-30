@@ -11,6 +11,8 @@ Rider:  WAITING -> MATCHED -> ON_TRIP -> DONE, or WAITING -> CANCELLED, or (with
         or PENDING again (one retry a few minutes later).
 Driver: IDLE -> EN_ROUTE -> ON_TRIP -> IDLE (an ON_TRIP driver may hold a queued next rider)
         With repositioning (M7): IDLE -> REPOSITIONING -> IDLE, or -> EN_ROUTE if dispatched on the way.
+        With supply response (M6b): reserve drivers start OFFLINE -> IDLE when surge draws them online, and
+        IDLE -> OFFLINE again when it's over; any idle driver may chase a surge (IDLE -> REPOSITIONING).
 
 Two travel models (M6): ``travel`` is how long drives really take (the world), and ``belief`` is
 what the matcher assumes when it builds ETA matrices and quotes. They are the same object unless
@@ -129,6 +131,7 @@ class Driver:
 # and new prices apply before the requests at the same instant.
 REQUEST, PATIENCE, ARRIVE, LATE, TRIP_DONE, MOVE_DONE, DISPATCH = range(7)
 PRICE = -1
+LOG_ON = PRICE - 1  # a reserve driver comes online (M6b); before prices and requests at the same instant
 REPOSITION = DISPATCH + 1  # after dispatch at equal timestamps: riders get the free drivers first
 
 
@@ -172,6 +175,11 @@ class Simulation:
         self.repo_estimator: Optional[DemandEstimator] = None
         if self.repo_on:
             self._init_reposition()
+        self.n_fleet = len(self.drivers)  # reserve drivers (M6b) come after the fleet
+        self.supply_on = cfg.supply.enabled
+        self.logons = self.logoffs = 0
+        if self.supply_on:
+            self._init_supply()
 
     # ----------------------------------------------------------------- events
     def _schedule(self, t: float, kind: int, *args) -> None:
@@ -234,6 +242,7 @@ class Simulation:
             DISPATCH: self._on_dispatch,
             PRICE: self._on_price,
             REPOSITION: self._on_reposition,
+            LOG_ON: self._on_log_on,
         }
 
     def _on_request(self, rid: int) -> None:
@@ -368,6 +377,8 @@ class Simulation:
         self.prices = zone_prices(zones, demand, waiting, supply, pc, self.neighbours)
         self.price_log.append((self.now, self.prices, demand, dict(supply)))
         self._publish_prices(self.prices, demand, {z: float(supply.get(z, 0)) for z in zones})
+        if self.supply_on:
+            self._supply_response()
         if self.now + pc.interval_s < self.cfg.demand.duration_s:
             self._schedule(self.now + pc.interval_s, PRICE)
 
@@ -447,13 +458,13 @@ class Simulation:
         if self.now + rc.interval_s < self.cfg.demand.duration_s:
             self._schedule(self.now + rc.interval_s, REPOSITION)
 
-    def _start_move(self, d: Driver, zone: int) -> None:
+    def _start_move(self, d: Driver, zone: int, kind: str = "plan") -> None:
         route = self._route(d.pos, self.repo_targets[zone])
         if route.duration_s <= 0:
             return
         d.leg = Leg(route, self.now)
         d.move = {"driver": d.id, "zone": zone, "t0": self.now, "planned_s": route.duration_s, "route": route,
-                  "end_t": None, "dispatched": False}
+                  "end_t": None, "dispatched": False, "kind": kind}  # kind: "plan" (M7) or "chase" (M6b)
         self.moves.append(d.move)
         self._set_state(d, DriverState.REPOSITIONING)
         self._publish_driver(d)
@@ -470,6 +481,75 @@ class Simulation:
         self._end_move(d, dispatched=False)
         d.leg = Leg(Route.stationary(d.leg.end), self.now)
         self._set_state(d, DriverState.IDLE)
+        self._publish_driver(d)
+        self._request_dispatch()
+
+    # ------------------------------------------------------- supply response
+    def _init_supply(self) -> None:
+        sc = self.cfg.supply
+        if not self.pricing_on:
+            raise ValueError("the supply response reacts to surge prices: it needs pricing.enabled")
+        n_reserve = round(sc.reserve_share * self.cfg.drivers.num_drivers) if sc.log_on_elasticity > 0 else 0
+        for p in (initial_driver_positions(self.cfg, n_reserve, stream=11) if n_reserve else []):
+            self.drivers.append(Driver(len(self.drivers), Leg(Route.stationary(p), 0.0), state=DriverState.OFFLINE))
+        if not self.repo_on:  # chasing moves to the same zone points as M7
+            self.repo_targets = zone_targets(self.zones, sc.points_path)
+        self._pending_on: Set[int] = set()
+        self._supply_round = 0
+
+    def _supply_response(self) -> None:
+        """After a price update: reserve drivers log on or off, idle drivers chase higher prices."""
+        sc, seed = self.cfg.supply, self.cfg.seed
+        self._supply_round += 1
+        k = self._supply_round
+        price_at = lambda p: self.prices.get(self._zone_of(p), 1.0)  # noqa: E731
+        if sc.log_on_elasticity > 0:
+            for d in self.drivers[self.n_fleet:]:
+                if d.state is DriverState.OFFLINE:
+                    m = price_at(d.pos)
+                    if d.id in self._pending_on or m <= 1.0:
+                        continue
+                    if np.random.default_rng([seed, 9, d.id, k]).random() < 1.0 - m ** -sc.log_on_elasticity:
+                        z = np.random.default_rng([seed, 10, d.id, k]).standard_normal()
+                        self._pending_on.add(d.id)
+                        self._schedule(self.now + sc.log_on_delay_s * float(np.exp(sc.log_on_delay_sigma * z)),
+                                       LOG_ON, d.id)
+                elif (d.state is DriverState.IDLE and self.now - d.state_since >= sc.log_off_idle_s
+                      and price_at(d.pos) <= 1.0):
+                    self._set_state(d, DriverState.OFFLINE)
+                    self.logoffs += 1
+                    self._publish_driver(d)
+        if sc.chase_strength > 0:
+            self._chase()
+
+    def _chase(self) -> None:
+        sc, step = self.cfg.supply, self.cfg.pricing.step
+        surged = sorted(z for z, m in self.prices.items() if m > 1.0 and z in self.repo_targets)
+        idle = [d for d in self.drivers if d.state is DriverState.IDLE and self.now - d.state_since >= sc.chase_min_idle_s]
+        if not surged or not idle:
+            return
+        if hasattr(self.belief, "set_time"):
+            self.belief.set_time(self.now)
+        drive = self.belief.matrix(np.array([d.pos for d in idle]), np.array([self.repo_targets[z] for z in surged]))
+        m_to = np.array([self.prices[z] for z in surged])
+        for i, d in enumerate(idle):
+            gain = m_to - self.prices.get(self._zone_of(d.pos), 1.0)
+            ok = (gain >= step - 1e-9) & (drive[i] <= sc.chase_max_s)
+            if not ok.any():
+                continue
+            # The best price in reach; the nearest of equally priced zones.
+            j = min(np.flatnonzero(ok), key=lambda j: (-m_to[j], drive[i, j]))
+            q = min(1.0, sc.chase_strength * float(gain[j]))
+            if np.random.default_rng([self.cfg.seed, 12, d.id, self._supply_round]).random() < q:
+                self._start_move(d, surged[j], kind="chase")
+
+    def _on_log_on(self, did: int) -> None:
+        d = self.drivers[did]
+        self._pending_on.discard(did)
+        if d.state is not DriverState.OFFLINE:
+            return
+        self._set_state(d, DriverState.IDLE)
+        self.logons += 1
         self._publish_driver(d)
         self._request_dispatch()
 

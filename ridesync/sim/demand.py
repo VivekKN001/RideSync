@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
+from typing import Optional
 
 import numpy as np
 
@@ -105,11 +106,14 @@ def generate_riders(cfg: SimConfig) -> list[RiderSpec]:
     ]
 
 
-def initial_driver_positions(cfg: SimConfig) -> np.ndarray:
-    rng = np.random.default_rng([cfg.seed, 2])
+def initial_driver_positions(cfg: SimConfig, n: Optional[int] = None, stream: int = 2) -> np.ndarray:
+    """Where drivers start. ``n``/``stream`` place extra drivers (the M6b reserve) from their own random
+    stream, so the fleet's positions don't change."""
+    rng = np.random.default_rng([cfg.seed, stream])
+    n = cfg.drivers.num_drivers if n is None else n
     if cfg.demand.trips_path:
         # Start drivers where the demand is: at dropoffs of real trips from the same slice.
         trips = _load_trips(cfg.demand.trips_path)
-        pick = rng.integers(0, len(trips), cfg.drivers.num_drivers)
+        pick = rng.integers(0, len(trips), n)
         return trips[["do_lat", "do_lon"]].to_numpy()[pick]
-    return sample_points(cfg.city, cfg.drivers.num_drivers, rng)
+    return sample_points(cfg.city, n, rng)
