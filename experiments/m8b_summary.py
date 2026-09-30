@@ -61,7 +61,7 @@ def main() -> None:
     lines = ["# M8b: the experiments on more days and at full scale", "",
              "Same code and settings as M2, M6 (surge) and M7, with the M8 models (trained 2025-01..2026-06) and "
              "straight-line travel calibrated on 15 July 2026 unless marked road times (OSRM × 2.26). Every day is in the models' test month. 10% of Manhattan "
-             "trips unless marked full scale (fleets 10x). Paired deltas, mean ± 95% CI.", "",
+             "trips unless marked full scale (fleets 10x). Paired deltas, mean ± 95% CI (Student t over seeds).", "",
              f"## Batching with the cancellation-aware cost (`{BEST}`) against instant nearest-driver (M2)", "",
              "| day | drivers | cancel % (instant) | Δ cancel | Δ trips/h | Δ wait_all s |", "|---|---|---|---|---|---|"]
     for key, label in [("m2_straight", "Wed 13 Mar 2024, 17-20 (M2)"), *[(f"m8b_m2_{d}", v) for d, v in DAYS.items()],

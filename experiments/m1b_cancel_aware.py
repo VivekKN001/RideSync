@@ -59,11 +59,15 @@ def main():
     sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser()
     ap.add_argument("--seeds", type=int, default=8)
+    ap.add_argument("--resume", action="store_true",
+                    help="keep the runs already in the runs CSV, run only the missing ones, save each as it finishes")
     args = ap.parse_args()
 
     windows, values, fleets = [5, 10, 30], [900.0, 1500.0], [250, 300, 350, 400]
     t0 = time.time()
-    df = run_grid(SimConfig(), build_arms(windows, values), {"drivers.num_drivers": fleets}, range(args.seeds))
+    RESULTS.mkdir(exist_ok=True)
+    df = run_grid(SimConfig(), build_arms(windows, values), {"drivers.num_drivers": fleets}, range(args.seeds),
+                  checkpoint=RESULTS / "m1b_runs.csv" if args.resume else None)
     print(f"{len(df)} runs in {time.time() - t0:.0f}s")
 
     RESULTS.mkdir(exist_ok=True)

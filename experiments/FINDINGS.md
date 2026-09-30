@@ -57,12 +57,12 @@ immediate-greedy baseline hits that at ~500 drivers for the 10% slice. Caveat: s
 an estimate of the real fleet, and full-scale effects need a run at a higher sample fraction.
 
 **Real demand is clustered, and that gives the optimal solver work to do.** Paired optimal − greedy, same cost,
-6 seeds (95% CI):
+6 seeds (95% CI, Student t):
 
 | arm | 400 drivers | 450 drivers | 500 drivers |
 |---|---|---|---|
-| @10s, plain | +2.1 ± 3.1 trips/h | +1.9 ± 1.0 trips/h, −0.17 ± 0.09 pp cancel | +1.9 ± 1.2 trips/h, −0.17 ± 0.11 pp |
-| @30s, cancellation-aware | **+6.7 ± 3.5 trips/h, −0.59 ± 0.31 pp** | **+4.7 ± 2.5, −0.42 ± 0.22 pp** | **+3.3 ± 2.1, −0.30 ± 0.18 pp** |
+| @10s, plain | +2.1 ± 4.1 trips/h | +1.9 ± 1.3 trips/h, −0.17 ± 0.12 pp cancel | +1.9 ± 1.6 trips/h, −0.17 ± 0.14 pp |
+| @30s, cancellation-aware | **+6.7 ± 4.5 trips/h, −0.59 ± 0.40 pp** | **+4.7 ± 3.3, −0.42 ± 0.29 pp** | **+3.3 ± 2.7, −0.30 ± 0.24 pp** |
 
 With 30 s batches, greedy's batch solution is strictly worse in 27–44% of batches, by 32–73 s of total pickup time
 each. That's a real edge, but small (≈0.3–0.6% more trips). The large effects still come from batching and the
@@ -205,10 +205,10 @@ paired against no surge. Rows are forecast-driven surge vs no surge (reactive is
 
 | drivers | ε | no-surge cancel | Δ cancel pp | Δ wait_all s | Δ trips/h | Δ revenue/h | surged trips |
 |---|---|---|---|---|---|---|---|
-| 300 | 0.3 | 21.8% | −7.4 | −22 | −28 ± 5 (−3.2%) | +102% | 87% |
-| 300 | 0.8 | 21.8% | −13.8 | −74 | −56 ± 6 (−6.4%) | +48% | 67% |
-| 400 | 0.5 | 6.5% | −1.6 | −23 | −32 ± 4 (−3.0%) | +18% | 29% |
-| 500 | 0.5 | 3.5% | −0.5 | −4 | −7 ± 3 (−0.7%) | +5% | 8% |
+| 300 | 0.3 | 21.8% | −7.4 | −22 | −28 ± 7 (−3.2%) | +102% | 87% |
+| 300 | 0.8 | 21.8% | −13.8 | −74 | −56 ± 7 (−6.4%) | +48% | 67% |
+| 400 | 0.5 | 6.5% | −1.6 | −23 | −32 ± 5 (−3.0%) | +18% | 29% |
+| 500 | 0.5 | 3.5% | −0.5 | −4 | −7 ± 4 (−0.7%) | +5% | 8% |
 
 **Calibrating the trigger.** The first version priced each zone alone, with the surge starting at pressure 1.
 It surged 43–91% of trips in every cell, including 51% at 500 drivers, where cancellations are only 3.5% and a
@@ -281,7 +281,7 @@ corrected model plus noise, and the matcher believes either the global base or t
 | matcher belief | \|ETA error\| s | mean error s | late > 2 min | cancel % | wait_all s | trips/h |
 |---|---|---|---|---|---|---|
 | global multiplier | 266 | +260 | 78.9% | 12.8 | 512 | 979 |
-| learned ETA | 74 (−191 ± 2) | +12 | 12.7% | 19.9 (+7.0 ± 0.4) | 332 (−179 ± 4) | 900 (−79 ± 5) |
+| learned ETA | 74 (−191 ± 3) | +12 | 12.7% | 19.9 (+7.0 ± 0.6) | 332 (−179 ± 5) | 900 (−79 ± 6) |
 
 Honest quotes cut the ETA error by 72%. The share of pickups more than 2 minutes late drops from 79% to 13%,
 and the average rider waits 179 s less. The cancellation and trips/h columns look worse, but that's a known
@@ -305,8 +305,8 @@ correction by hour, by pickup zone × hour, or by straight-line distance band ×
 Tables keyed on time and place alone are no better than one speed for pickups. Most of the global
 multiplier's error comes from one fact: short drives are much slower per km than a straight line suggests
 (lights, turns, getting going). Pickups are short drives. A distance table captures most of that. Against it,
-the learned ETA still cuts quote error by 44 ± 2 s and wait by 58 ± 3 s, with −0.9 ± 0.5 pp cancellations and
-+11 ± 6 trips/h. That is the honest size of what the model adds over a sensible table. Offline, the distance table
+the learned ETA still cuts quote error by 44 ± 3 s and wait by 58 ± 4 s, with −0.9 ± 0.6 pp cancellations and
++11 ± 7 trips/h. That is the honest size of what the model adds over a sensible table. Offline, the distance table
 is 33.0% MAPE against 24.2% for the learned model (straight-line base). On OSRM road times it doesn't help
 (34.3%), because road routing already knows short drives are slow.
 
@@ -317,9 +317,9 @@ runs at three medians (lognormal, σ 0.5). Paired, 6 seeds, 400 drivers:
 
 | lateness tolerance (median) | global multiplier: cancel / trips/h | distance × hour table: cancel / trips/h | learned ETA: cancel / trips/h | learned − global | learned − distance table |
 |---|---|---|---|---|---|
-| 2 min | 69.0% / 348 | 35.7% / 722 | 28.0% / 809 | +461 ± 6 | **+87 ± 4** (−7.7 pp cancel) |
-| 3 min | 55.4% / 501 | 31.3% / 772 | 24.6% / 847 | +346 ± 14 | **+75 ± 12** (−6.7 pp) |
-| 5 min | 37.2% / 705 | 25.5% / 837 | 21.6% / 881 | +176 ± 8 | **+44 ± 10** (−3.9 pp) |
+| 2 min | 69.0% / 348 | 35.7% / 722 | 28.0% / 809 | +461 ± 8 | **+87 ± 5** (−7.7 pp cancel) |
+| 3 min | 55.4% / 501 | 31.3% / 772 | 24.6% / 847 | +346 ± 18 | **+75 ± 16** (−6.7 pp) |
+| 5 min | 37.2% / 705 | 25.5% / 837 | 21.6% / 881 | +176 ± 10 | **+44 ± 13** (−3.9 pp) |
 
 The earlier cancellation result really was the artifact. Once an optimistic quote costs something, a matcher
 that believes one city-wide speed at rush hour loses a third to two thirds of its riders to late drivers:
@@ -358,13 +358,13 @@ up on late drivers (median tolerance 3 min). Every 5 minutes a policy may move d
 
 | drivers | arm | Δ cancel pp | Δ wait_all s | Δ trips/h | Δ empty driving pp | reposition km/h | moves/driver-h |
 |---|---|---|---|---|---|---|---|
-| 300 | planned_forecast | −0.7 ± 0.8 | −1 ± 2 | +8.5 ± 9.5 | −0.0 ± 0.4 | 1 | 0.00 |
-| 400 | drift | +0.5 ± 0.4 | +3 ± 3 | −5.5 ± 4.8 | +0.5 ± 0.3 | 26 | 0.10 |
-| 400 | planned_reactive | −1.1 ± 0.5 | −6 ± 2 | **+13.1 ± 5.6** | +0.8 ± 0.3 | 50 | 0.17 |
-| 400 | planned_forecast | −0.9 ± 0.2 | −9 ± 2 | **+10.2 ± 2.4** | +0.6 ± 0.2 | 44 | 0.15 |
-| 500 | drift | +0.4 ± 0.5 | +11 ± 4 | −5.2 ± 5.9 | +1.7 ± 0.1 | 75 | 0.19 |
-| 500 | planned_reactive | **−3.7 ± 0.3** | **−42 ± 6** | **+44.7 ± 3.5** | +1.9 ± 0.2 | 246 | 0.50 |
-| 500 | planned_forecast | **−3.5 ± 0.3** | **−37 ± 2** | **+41.2 ± 3.3** | +1.3 ± 0.1 | 197 | 0.40 |
+| 300 | planned_forecast | −0.7 ± 1.0 | −1 ± 3 | +8.5 ± 12.5 | −0.0 ± 0.5 | 1 | 0.00 |
+| 400 | drift | +0.5 ± 0.5 | +3 ± 4 | −5.5 ± 6.3 | +0.5 ± 0.3 | 26 | 0.10 |
+| 400 | planned_reactive | −1.1 ± 0.6 | −6 ± 2 | **+13.1 ± 7.3** | +0.8 ± 0.3 | 50 | 0.17 |
+| 400 | planned_forecast | −0.9 ± 0.3 | −9 ± 3 | **+10.2 ± 3.2** | +0.6 ± 0.3 | 44 | 0.15 |
+| 500 | drift | +0.4 ± 0.6 | +11 ± 5 | −5.2 ± 7.7 | +1.7 ± 0.2 | 75 | 0.19 |
+| 500 | planned_reactive | **−3.7 ± 0.4** | **−42 ± 8** | **+44.7 ± 4.6** | +1.9 ± 0.3 | 246 | 0.50 |
+| 500 | planned_forecast | **−3.5 ± 0.4** | **−37 ± 3** | **+41.2 ± 4.3** | +1.3 ± 0.2 | 197 | 0.40 |
 
 All deltas are against `none`. At 500 drivers `none` cancels 6.9% of requests with 204 s waits.
 
@@ -390,7 +390,7 @@ fewer moves (197 vs 246 km/h) for the same gain, a slightly better return per em
 The hypothesis that a slow lever would finally make the forecast pay off is only weakly supported.
 
 **Move cap.** Allowing only 5-minute moves (vs 10) cuts moves by two thirds and gives up most of the gain: at 400
-drivers, −8.5 ± 4.9 trips/h against the 10-minute cap.
+drivers, −8.5 ± 6.5 trips/h against the 10-minute cap.
 
 **Caveats.** `none` is a pessimistic baseline, and `drift` is the realistic one. Every arm moves the same share
 of the fleet, so the comparison is about *where* drivers go. The 10% sample shrinks each zone to a few drivers,
@@ -481,7 +481,7 @@ throughput. Full tables: `results/m8b_m2_osrm_wed_pm_report.md`.
 - **Saturday night** behaves like an evening peak: at 300 drivers **-4.2 pp cancellations and +50 trips/h (+6.9%)**,
   +23 trips/h at 400, gone by 500 (+0.5%).
 - **Wednesday morning** is the flow problem again, and road times make it clearer. Batching doesn't help at 300 drivers
-  (-0.6 ± 0.7 pp, +7 ± 7 trips/h), and from 400 drivers it **hurts: +2.1 to +2.3 pp cancellations, -22 to -24 trips/h**
+  (-0.6 ± 1.1 pp, +7 ± 12 trips/h), and from 400 drivers it **hurts: +2.1 to +2.3 pp cancellations, -22 to -24 trips/h**
   (-0.5 to -1.0 pp with straight-line times). With 31-43% of drivers idle and 22-25% of riders still cancelling, the
   cars are in the wrong places, and waiting 30 s for a batch only adds to long road pickups (299-321 s).
 - Optimal against greedy on the same batches stays within ±10 trips/h on every day at this sample (greedy worse in

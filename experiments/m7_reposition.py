@@ -87,6 +87,8 @@ def main():
     ap.add_argument("--seeds", type=int, default=6)
     ap.add_argument("--workers", type=int, default=None)
     ap.add_argument("--tag", default=None, help="output file prefix under experiments/results (default: m7_reposition)")
+    ap.add_argument("--resume", action="store_true",
+                    help="keep the runs already in the runs CSV, run only the missing ones, save each as it finishes")
     args = ap.parse_args()
 
     base = SimConfig(travel=travel_from_calibration("straight")).with_(**{
@@ -101,9 +103,12 @@ def main():
         base = base.with_(fare=fare_from_file(str(fare)))  # for the road factor of reposition km
 
     t0 = time.time()
-    df = run_grid(base, ARMS, {FLEET: args.fleets}, range(args.seeds), workers=args.workers)
+    RESULTS.mkdir(exist_ok=True)
+    ckpt = (lambda name: RESULTS / f"{args.tag or 'm7_reposition'}{name}_runs.csv" if args.resume else None)  # noqa: E731
+    df = run_grid(base, ARMS, {FLEET: args.fleets}, range(args.seeds), workers=args.workers, checkpoint=ckpt(""))
     mid = sorted(args.fleets)[len(args.fleets) // 2]
-    cap = run_grid(base, [ARMS[0], ARMS[3], CAP_ARM], {FLEET: [mid]}, range(args.seeds), workers=args.workers)
+    cap = run_grid(base, [ARMS[0], ARMS[3], CAP_ARM], {FLEET: [mid]}, range(args.seeds), workers=args.workers,
+                   checkpoint=ckpt("_cap"))
     print(f"{len(df) + len(cap)} runs in {time.time() - t0:.0f}s")
     for d in (df, cap):
         d["empty_frac"] = d["driver_enroute_frac"] + d["driver_reposition_frac"]
@@ -124,7 +129,7 @@ def main():
              f"riders give up on late drivers "
              f"(median tolerance {base.riders.lateness_tolerance_median_s:.0f} s). Every {p.interval_s:.0f} s the policy "
              f"may move drivers idle >= {p.min_idle_s:.0f} s, at most {p.max_share:.0%} of the idle fleet, on drives "
-             f"<= {p.max_move_s:.0f} s. {args.seeds} seeds, mean ± 95% CI of paired differences.",
+             f"<= {p.max_move_s:.0f} s. {args.seeds} seeds, mean ± 95% CI of paired differences (Student t).",
              "`empty driving` = share of driver time driving without a rider (to pickups + repositioning).", ""]
     for n in args.fleets:
         lines += [f"## {n} drivers: against `none`", ""] + _table(vs_none, n, "none") + [""]

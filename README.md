@@ -111,7 +111,8 @@ mode over Kafka, add Flink, storage and dashboards, train the models and rerun e
 
 ## Results
 
-Every number is a paired comparison over seeded runs (same riders, same draws), mean ± 95% CI. Details, tables and
+Every number is a paired comparison over seeded runs (same riders, same draws), mean ± 95% CI (Student t
+over the seeds). Details, tables and
 caveats: [`experiments/FINDINGS.md`](experiments/FINDINGS.md).
 
 | Question | Answer |
@@ -459,6 +460,7 @@ python experiments/m2_real_demand.py --travel osrm --slice data/processed/trips_
     --fleets 3000 4000 5000 --seeds 2 --arms batched_greedy@30s+aware optimal@30s+aware --tag m8b_m2_osrm_full --resume
 python experiments/m6_eta_sim.py --base osrm --tag m8b_eta_sim --late-tolerance 120 180 300 --resume
 python experiments/m8b_summary.py
+bash experiments/regenerate_reports.sh                       # rebuild every report from the saved runs, no simulation
 
 # M6 live: surge on the live map and dashboards
 python -m ridesync.live.sim --speed 20 --surge forecast                  # the simulator prices zones itself

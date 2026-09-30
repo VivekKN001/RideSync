@@ -46,7 +46,7 @@ def _d(r, m, scale=1.0, digits=0):
 
 def report(s, notes) -> str:
     lines = ["# M6: surge pricing (Manhattan TLC replay)", "", *notes, "",
-             "Deltas are paired against `no_surge` at the same fleet, elasticity and seed (mean ± 95% CI).",
+             "Deltas are paired against `no_surge` at the same fleet, elasticity and seed (mean ± 95% CI, Student t over seeds).",
              "`served` = completed trips / app opens. `cancel` is per request. Revenue is fare × multiplier.", ""]
     for n in sorted(s[FLEET].unique()):
         for e in sorted(s[ELAST].unique()):
@@ -78,6 +78,8 @@ def main():
     ap.add_argument("--workers", type=int, default=None)
     ap.add_argument("--tag", default=None, help="output file prefix under experiments/results (default: m6_surge)")
     ap.add_argument("--no-forecast", action="store_true", help="skip the forecast arm (no demand model yet)")
+    ap.add_argument("--resume", action="store_true",
+                    help="keep the runs already in the runs CSV, run only the missing ones, save each as it finishes")
     args = ap.parse_args()
 
     base = SimConfig(travel=travel_from_calibration("straight")).with_(**{
@@ -104,7 +106,10 @@ def main():
                  f"{p.retry_median_s:.0f} s.")
 
     t0 = time.time()
-    df = run_grid(base, arms, {FLEET: args.fleets, ELAST: args.elasticities}, range(args.seeds), workers=args.workers)
+    RESULTS.mkdir(exist_ok=True)
+    ckpt = RESULTS / f"{args.tag or 'm6_surge'}_runs.csv" if args.resume else None
+    df = run_grid(base, arms, {FLEET: args.fleets, ELAST: args.elasticities}, range(args.seeds), workers=args.workers,
+                  checkpoint=ckpt)
     print(f"{len(df)} runs in {time.time() - t0:.0f}s")
     RESULTS.mkdir(exist_ok=True)
     tag = args.tag or "m6_surge"

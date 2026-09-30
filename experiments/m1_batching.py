@@ -47,6 +47,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--seeds", type=int, default=8)
     ap.add_argument("--quick", action="store_true", help="small grid for a smoke run")
+    ap.add_argument("--resume", action="store_true",
+                    help="keep the runs already in the runs CSV, run only the missing ones, save each as it finishes")
     args = ap.parse_args()
 
     if args.quick:
@@ -55,7 +57,9 @@ def main():
         windows, lambdas, fleets, seeds = [2, 5, 10, 20, 30], [0.0, 1.0], [250, 300, 350, 400, 450], range(args.seeds)
 
     t0 = time.time()
-    df = run_grid(SimConfig(), arms(windows, lambdas), {"drivers.num_drivers": fleets}, seeds)
+    RESULTS.mkdir(exist_ok=True)
+    df = run_grid(SimConfig(), arms(windows, lambdas), {"drivers.num_drivers": fleets}, seeds,
+                  checkpoint=RESULTS / "m1_runs.csv" if args.resume else None)
     print(f"{len(df)} runs in {time.time() - t0:.0f}s")
 
     RESULTS.mkdir(exist_ok=True)

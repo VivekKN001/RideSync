@@ -186,3 +186,31 @@ def test_run_grid_resumes_from_its_checkpoint(tmp_path):
     pd.testing.assert_frame_equal(resumed[cols].reset_index(drop=True), fresh[cols].reset_index(drop=True),
                                   check_dtype=False)
     assert first[cols].equals(fresh[fresh["seed"] == 0][cols].reset_index(drop=True))
+
+
+def test_paired_interval_is_student_t():
+    from scipy.stats import t as student_t
+
+    from ridesync.experiments import paired_summary
+
+    diffs = [1.0, 3.0, 2.0, 6.0]
+    df = pd.DataFrame([{"arm": "base", "seed": s, "x": 0.0} for s in range(4)]
+                      + [{"arm": "new", "seed": s, "x": d} for s, d in enumerate(diffs)])
+    df["g"] = 1
+    r = paired_summary(df, "base", ["x"], ["g"]).set_index("arm").loc["new"]
+    sd = pd.Series(diffs).std(ddof=1)
+    assert r["d_x"] == pytest.approx(3.0)
+    assert r["ci_x"] == pytest.approx(student_t.ppf(0.975, 3) * sd / 2)  # 3.18, not 1.96
+    assert r["ci_x"] > 1.6 * 1.96 * sd / 2
+
+
+def test_no_sim_switch_refuses_to_simulate(tmp_path, monkeypatch):
+    from ridesync.experiments import Arm, run_grid
+
+    base = SMALL.with_(**{"demand.duration_s": 300.0, "drivers.num_drivers": 20})
+    ckpt = tmp_path / "runs.csv"
+    run_grid(base, [Arm("a", {})], {"drivers.num_drivers": [20]}, range(1), workers=1, checkpoint=ckpt)
+    monkeypatch.setenv("RIDESYNC_NO_SIM", "1")
+    assert len(run_grid(base, [Arm("a", {})], {"drivers.num_drivers": [20]}, range(1), checkpoint=ckpt)) == 1
+    with pytest.raises(RuntimeError, match="RIDESYNC_NO_SIM"):
+        run_grid(base, [Arm("a", {})], {"drivers.num_drivers": [20]}, range(2), checkpoint=ckpt)

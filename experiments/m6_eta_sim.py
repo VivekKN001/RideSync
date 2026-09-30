@@ -114,7 +114,7 @@ def main():
 
     lines = [f"# {tag.split('_')[0].upper()}: matcher ETA belief vs world truth (`{args.base}` base, `{Path(args.slice).name}`)", "",
              f"World: calibrated `{args.base}` × learned correction × lognormal noise (sigma {sigma:.3f}). "
-             "Optimal @30 s, cancellation-aware. Deltas are paired (mean ± 95% CI) against the arm named in each "
+             "Optimal @30 s, cancellation-aware. Deltas are paired (mean ± 95% CI, Student t over seeds) against the arm named in each "
              "table's heading.",
              "`|ETA error|` = |actual match-to-pickup time − quoted ETA|; `late > 2 min` = share of pickups more than "
              "2 min later than quoted.",

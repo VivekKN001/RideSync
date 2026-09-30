@@ -51,7 +51,8 @@ def run_grid(
 
     ``checkpoint`` is a CSV of finished runs: runs already in it are skipped, and each new run is appended
     the moment it finishes. A long grid (hours of OSRM at full scale) can then be stopped and resumed,
-    and a crash loses only the runs in flight.
+    and a crash loses only the runs in flight. With RIDESYNC_NO_SIM set, a missing run is an error instead:
+    rerunning a script with ``--resume`` then only rebuilds its summary and report from the saved runs.
     """
     keys = list(grid)
     points = [dict(zip(keys, values)) for values in itertools.product(*grid.values())]
@@ -64,6 +65,10 @@ def run_grid(
         for r in pd.read_csv(path).to_dict("records"):
             done[key(r["arm"], r, r["seed"])] = r
     todo = [j for j in jobs if key(j[1].label, j[2], j[3]) not in done]
+    if todo and os.environ.get("RIDESYNC_NO_SIM"):  # regenerating reports from saved runs: never simulate
+        _, arm, point, seed = todo[0]
+        raise RuntimeError(f"RIDESYNC_NO_SIM: {len(todo)} of {len(jobs)} runs are not in {path}, "
+                           f"e.g. {arm.label} {point} seed {seed}")
     if todo:
         with ProcessPoolExecutor(max_workers=workers or os.cpu_count()) as pool:
             futures = [pool.submit(_run, j) for j in todo]
@@ -79,7 +84,13 @@ def run_grid(
 def paired_summary(
     df: pd.DataFrame, baseline: str, metrics: List[str], by: List[str]
 ) -> pd.DataFrame:
-    """Per arm and grid point: mean of each metric and mean paired delta vs baseline with a 95% CI."""
+    """Per arm and grid point: mean of each metric and mean paired delta vs baseline with a 95% CI.
+
+    The interval is Student's t on the per-seed differences (n - 1 degrees of freedom). With 3-8 seeds the
+    normal 1.96 would make it 1.2-2.2x too narrow; with 2 seeds the interval is honest but very wide.
+    """
+    from scipy.stats import t as student_t
+
     base = df[df["arm"] == baseline].set_index(by + ["seed"])[metrics]
     out = []
     for keys, g in df.groupby(["arm"] + by, sort=False):
@@ -90,7 +101,7 @@ def paired_summary(
         for m in metrics:
             row[m] = g[m].mean()
             if keys[0] != baseline:
-                half = 1.96 * diff[m].std(ddof=1) / np.sqrt(n) if n > 1 else float("nan")
+                half = student_t.ppf(0.975, n - 1) * diff[m].std(ddof=1) / np.sqrt(n) if n > 1 else float("nan")
                 row[f"d_{m}"] = diff[m].mean()
                 row[f"ci_{m}"] = half
         out.append(row)
@@ -106,7 +117,7 @@ def _delta(row, m, scale=1.0, digits=0) -> str:
 
 def markdown_report(summary: pd.DataFrame, title: str, baseline: str, fleet_col: str, notes: List[str] = ()) -> str:
     lines = [f"# {title}", "",
-             f"Deltas are paired against `{baseline}` for the same seed (mean ± 95% CI).",
+             f"Deltas are paired against `{baseline}` for the same seed (mean ± 95% CI, Student t over seeds).",
              "`wait_all` counts cancelled riders up to their cancellation time; `wait` is completed riders only.",
              *notes]
     for n in summary[fleet_col].unique():
