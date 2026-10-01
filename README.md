@@ -6,8 +6,11 @@ Real-time ride-hailing dispatch: batched optimal bipartite matching (Hungarian) 
 evaluated on a measurable cost function (wait time, cancellations, driver idle time), on real Manhattan
 demand (NYC TLC, 31 months to July 2026) and road times (OSRM), live over Kafka + Flink, with ML for demand, ETA and surge.
 
+**[Read the write-up](https://vivekkn001.github.io/RideSync/blog/)**: the problem, the design and what it found, in one page.
+
 **[▶ Watch a recorded evening in your browser](https://vivekkn001.github.io/RideSync/)**: Wednesday 15 July 2026,
-17:00-20:00, 400 drivers, optimal matching every 30 s, nothing to install. Below, 18:00 at 80×:
+17:00-20:00, 400 drivers, optimal matching every 30 s with idle drivers repositioned toward expected demand,
+nothing to install. Below, 18:00 at 80× (recorded before M10, so without the violet repositioning drivers):
 
 ![Live map: Manhattan on 15 July 2026, 400 drivers. Waiting riders pulse pink, drivers on the way to a pickup are amber with a line to the rider, drivers with a passenger are blue, and zones short of drivers glow orange](docs/img/live_map.webp)
 
@@ -119,7 +122,7 @@ caveats: [`experiments/FINDINGS.md`](experiments/FINDINGS.md).
 |---|---|
 | Does batching beat instant nearest-driver? (M1, M2, M8b, M8c) | Yes, under scarcity, on four test months across a year: 30 s batches with a cancellation-aware cost give **−4 pp cancellations, +5–6% trips/h** on real roads (300 drivers, March 2024 and July 2026), and **+11% trips/h** on July 2026 evening peaks with straight-line times. The gain follows how scarce drivers are that evening (+3% in a quiet January, +12% in October), disappears once supply is ample, and in the morning peak it doesn't help (on real roads it costs 2 pp more cancellations). |
 | Does optimal (Hungarian) beat greedy on a batch? (M1c, M2, M8b) | At the 10% sample, only per batch (better in 19–41% of batches; trips/h within noise, on straight-line and road times). **At full scale, yes**: batches hold 100–325 riders, greedy is worse in 86–93% of them, and optimal gives **+249 ± 28 trips/h and −2.2 pp cancellations** at 4,000 drivers; **+148 to +191 trips/h (−1.3 to −1.7 pp) on real roads**. |
-| What does going live cost? (M3) | +1.4 to +4.2 s of rider wait at 10–60× speed and nothing else. At zero latency the live path is bit-identical to offline. Tick-to-batch takes 15–22 ms p50. |
+| What does going live cost? (M3, M10) | +1.4 to +4.2 s of rider wait at 10–60× speed and nothing else. At zero latency the live path is bit-identical to offline. Tick-to-batch takes 15–22 ms p50. With the matcher's repositioning plan and riders who give up on late drivers (M10), live at 10× matches offline within **+0.02 pp cancellations and +1.9 s wait**; all 2,723 moves sent over Kafka were applied. |
 | How long should the stream wait for late events? (M4) | 1 s cuts lost events 10×, down to 0.03%. The job waits 2 s, and nothing is silently dropped. |
 | Can we forecast demand? (M6, M8, M8c) | On July 2026, trained on 18 months: **17.8% WAPE** per zone per 15 min, against 22.4% for the best baseline; 19.0% at 60 min ahead. On October, January and April, each trained on the 12 months before: 16.4–17.3%, ahead of the best baseline every month. |
 | Does more (or newer) data help? (M8) | A little. Trained on 30 months instead of one: 18.2% → 17.7% WAPE, 220 → 212 s ETA error. Recency counts as much as 17× the volume, and a model trained on March 2024 still works two years later. |
@@ -215,17 +218,19 @@ caveats: [`experiments/FINDINGS.md`](experiments/FINDINGS.md).
   which Grafana loads on start: waiting riders, matches per minute, cancel rate, pickup ETA, solve time, offer
   round trip, a zone table and a run picker.
 
-**Live map** (http://localhost:8000), a 17:46 snapshot with 450 drivers (March 2024 demand). The island lies across wide screens
+**Live map** (`python -m ridesync.web`, served on port 8000 of your machine; or [the recorded replay](https://vivekkn001.github.io/RideSync/)),
+a 17:46 snapshot with 450 drivers (March 2024 demand). The island lies across wide screens
 and stays upright on phones. Free drivers are faint grey dots; drivers with a passenger are small blue dots with
 a short tail showing their direction; drivers on the way to a pickup are amber, with a line to the rider. Waiting
 riders pulse, pink turning red as the wait nears their patience. A green ripple marks a match and a red cross a
 cancellation. Zones glow orange when requests outnumbered free drivers in the last closed minute (from Flink).
+Since M10, drivers repositioning toward expected demand are violet, with a line to where they are going.
 Each layer can be hidden from the legend. (This screenshot came from an in-memory run without Kafka or Flink,
 with the per-zone counts computed in-process: since M9 that is `python -m ridesync.web --demo`.)
 
 ![Live map](docs/img/live_map.png)
 
-**Grafana** (http://localhost:3000) during a live run of the same slice at 10× with 450 drivers, the Flink job
+**Grafana** (port 3000 of your machine with the `storage` profile up) during a live run of the same slice at 10× with 450 drivers, the Flink job
 running and surge priced by the separate pricing service (`--surge forecast --price-service`). The panels marked
 "(from Flink)", the zone table, late events and the surge panels come from the `stream` profile.
 
@@ -369,6 +374,11 @@ Flink's UI stays local, because it can submit jobs.
   does); offline drivers are not free. The live map draws repositioning drivers in violet with a line to their
   target and hides offline ones. ClickHouse stores moves (`reposition_moves`); Grafana adds drivers by state over
   time and moves and late cancels per 10 s.
+- **Over Kafka** (`experiments/m3_live_vs_offline.py --m10`, July 15 evening, 500 drivers, noisy travel times, 2
+  seeds): at 10× the live run matches offline within +0.02 pp cancellations, +1.9 s of wait and −0.2 trips/h, with
+  the same move rate (0.41 vs 0.42 per driver-hour) and late-driver cancels (1.03% vs 1.08%). All 2,723 moves were
+  applied, none rejected. At 30×, latency is magnified 3×: 1.1% of offers expire (p99 offer delay 19 simulated
+  seconds against a 15 s timeout) and cancellations rise 0.23 pp.
 - **On by default.** `ridesync.live.sim`, `--demo` and the recorder run the matcher's plan (forecast demand when the
   model and a TLC slice are there) and riders who give up on late drivers; with `--surge`, drivers respond to
   prices. `--reposition none|drift|planned`, `--no-late-cancel` and `--no-supply` turn them off.

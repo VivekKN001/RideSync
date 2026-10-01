@@ -4,6 +4,7 @@
     python experiments/m3_live_vs_offline.py                    # speeds 10x 30x 60x, 2 seeds
     python experiments/m3_live_vs_offline.py --speeds 30 --seeds 1 --hours 1
     python experiments/m3_live_vs_offline.py --resume          # after an interruption
+    python experiments/m3_live_vs_offline.py --m10 --speeds 10 30   # M10: with the matcher's repositioning plan
 
 For every seed:
 - offline: the discrete-event simulator (``simulate``)
@@ -14,6 +15,9 @@ For every seed:
   magnify latency. Real deployment is 1x.
 
 Each live run gets fresh topics (prefix ``m3exp.``, recreated), so the matcher never replays old runs.
+
+``--m10`` adds what M10 brought live: the matcher's repositioning plan (forecast demand), riders who give up on a
+late driver, and M7's noisy travel times (so drivers are late sometimes). Reports go to ``m10_live_*``.
 """
 from __future__ import annotations
 
@@ -36,6 +40,8 @@ RESULTS = Path(__file__).parent / "results"
 PREFIX = "m3exp."
 METRICS = ["cancel_rate", "wait_all_mean_s", "wait_mean_s", "pickup_mean_s", "time_to_match_mean_s",
            "completed_per_hour", "driver_idle_frac", "batches", "batch_riders_mean"]
+M10_METRICS = ["cancel_late_rate", "moves_per_driver_hour"]
+NOISE = 0.27  # M7's world noise on travel times (experiments/m7_reposition.py)
 DIAG = ["offer_delay_mean_s", "offer_delay_p99_s", "offer_transit_ms_p50", "offer_transit_ms_p99",
         "tick_to_batch_ms_p50", "tick_to_batch_ms_p99", "rejected_frac", "max_lag_s", "wall_s"]
 
@@ -64,6 +70,7 @@ def main():
     ap.add_argument("--slice", default=DEFAULT_SLICE)
     ap.add_argument("--bootstrap", default="localhost:9092")
     ap.add_argument("--resume", action="store_true", help="skip runs already saved in the runs CSV")
+    ap.add_argument("--m10", action="store_true", help="planned repositioning, late cancels and noisy travel (M10)")
     args = ap.parse_args()
 
     base = SimConfig(travel=travel_from_calibration(args.travel)).with_(**{
@@ -76,9 +83,12 @@ def main():
         "dispatch.cost": AWARE,
         "dispatch.max_candidates": 20,
     })
+    if args.m10:
+        base = base.with_(**{"reposition.policy": "planned", "reposition.demand": "forecast",
+                             "riders.enroute_cancel": True, "travel.noise_sigma": NOISE})
 
     RESULTS.mkdir(exist_ok=True)
-    tag = f"m3_{args.travel}"
+    tag = f"m10_live_{args.travel}" if args.m10 else f"m3_{args.travel}"
     runs_csv = RESULTS / f"{tag}_runs.csv"
     # Every finished run is saved at once; --resume skips runs already in the CSV (a live seed takes ~40 min).
     rows = pd.read_csv(runs_csv).to_dict("records") if args.resume and runs_csv.exists() else []
@@ -126,10 +136,13 @@ def main():
     df = df[df["seed"] < args.seeds]
     off = df[df["mode"] == "offline"].set_index("seed")
     lines = [
+        "# M10: live over Kafka vs offline, with repositioning and late cancels" if args.m10 else
         "# M3: live over Kafka vs offline, same config and seeds", "",
         f"Demand `{args.slice}`, {args.hours:g} h, {args.drivers} drivers, optimal (lsa) every {args.interval:g} s, "
-        f"cancellation-aware cost, {args.travel} travel. {args.seeds} seed(s); deltas are paired with offline "
-        "for the same seed.",
+        f"cancellation-aware cost, {args.travel} travel"
+        + (f" with noise sigma {NOISE}; the matcher's repositioning plan (forecast demand) every 5 min, riders who "
+           "give up on a late driver" if args.m10 else "")
+        + f". {args.seeds} seed(s); deltas are paired with offline for the same seed.",
         "",
         f"Lockstep (live code, zero latency) identical to offline for every seed: "
         f"**{bool(df[df['mode'] == 'lockstep']['identical_to_offline'].all())}**",
@@ -137,6 +150,9 @@ def main():
         "| mode | cancel % | Δ cancel pp | wait_all s | Δ wait_all s | time to match s | Δ trips/h | batches |",
         "|---|---|---|---|---|---|---|---|",
     ]
+    if args.m10:
+        lines[-2] = lines[-2] + " late cancel % | moves / driver-h |"
+        lines[-1] = lines[-1] + "---|---|"
     for (mode, speed), g in df[df["mode"] != "lockstep"].groupby(["mode", "speed"], sort=False):
         g = g.set_index("seed")
         d = g[METRICS] - off.loc[g.index, METRICS]
@@ -146,6 +162,8 @@ def main():
             f"| {g['wait_all_mean_s'].mean():.1f} | {d['wait_all_mean_s'].mean():+.1f} "
             f"| {g['time_to_match_mean_s'].mean():.1f} | {d['completed_per_hour'].mean():+.1f} "
             f"| {g['batches'].mean():.0f} |"
+            + (f" {g['cancel_late_rate'].mean() * 100:.2f} | {g['moves_per_driver_hour'].mean():.2f} |"
+               if args.m10 else "")
         )
     lines += ["", "## Where the latency goes (live runs, mean over seeds)", "",
               "| speed | offer delay, sim s (mean / p99) | tick → batch solved, ms (p50 / p99) "
@@ -159,6 +177,13 @@ def main():
             f"| {m['offer_transit_ms_p50']:.1f} / {m['offer_transit_ms_p99']:.1f} "
             f"| {m['rejected_frac'] * 100:.2f} | {m['max_lag_s']:.1f} | {m['wall_s']:.0f} |"
         )
+    if args.m10:
+        live = df[df["mode"] == "live"]
+        # the simulator's move outcomes (diagnostics), not the moves_* metrics of summarize
+        cols = sorted(c for c in live.columns if c == "moves_started" or c.startswith("moves_rejected"))
+        if cols:
+            lines += ["", "Repositioning moves the simulator received from the matcher (live runs, total): "
+                      + ", ".join(f"{c[len('moves_'):]} {int(live[c].fillna(0).sum())}" for c in cols) + "."]
     text = "\n".join(lines) + "\n"
     (RESULTS / f"{tag}_report.md").write_text(text, encoding="utf-8")
     print(text)

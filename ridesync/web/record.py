@@ -137,7 +137,7 @@ def write_site(doc: dict, out: Path) -> Dict[str, int]:
     data = json.dumps(doc, separators=(",", ":")).encode()
     (out / "replay.json.gz").write_bytes(gzip.compress(data, compresslevel=9, mtime=0))
     (out / "zones.geojson").write_text(json.dumps(manhattan_geojson(), separators=(",", ":")), encoding="utf-8")
-    page = render_page("recorded run", {"How it works": REPO, "Results": f"{REPO}#results"}, "replay.json.gz")
+    page = render_page("recorded run", {"Write-up": "blog/", "Code": REPO, "Results": f"{REPO}#results"}, "replay.json.gz")
     (out / "index.html").write_text(page, encoding="utf-8", newline="\n")
     return {"raw json": len(data), **{n: (out / n).stat().st_size for n in SITE_FILES}}
 

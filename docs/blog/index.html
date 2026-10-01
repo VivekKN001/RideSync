@@ -1,0 +1,685 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>RideSync: Dispatching Manhattan</title>
+<meta name="description" content="How batched optimal matching, honest ETAs and repositioning get more New Yorkers a ride without adding a car, tested on 31 months of real trips and run live over Kafka and Flink.">
+<meta property="og:title" content="Can a smarter dispatcher get more New Yorkers a ride without adding a car?">
+<meta property="og:description" content="RideSync: real-time ride-hailing dispatch on real Manhattan demand, measured on 27 days across a year.">
+<meta property="og:image" content="https://vivekkn001.github.io/RideSync/blog/img/og-cover.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:type" content="article">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a single reading column (~66ch) with figures that break wider; a night-map palette shared with the live map. */
+:root {
+  --bg: #f5f6f8;            /* page: cool paper, biased toward the map's blue */
+  --surface: #ffffff;       /* figures, takeaways */
+  --ink: #15181d;
+  --ink-2: #4a505a;
+  --ink-3: #737a85;
+  --rule: #dfe2e7;
+  --accent: #b86e00;        /* the map's "to pickup" amber, darkened for text on light */
+  --pos: #2a78d6;           /* data: gains */
+  --neg: #d03b3b;           /* data: losses */
+  --repo: #8a5cf0;          /* the map's repositioning violet */
+  --rider: #e0447e;         /* the map's waiting-rider pink, deepened for light */
+  --grid: #e7e9ed;
+  --f-display: "Barlow Condensed", "Arial Narrow", "Roboto Condensed", sans-serif;
+  --f-body: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+  --measure: 66ch;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #101317; --surface: #171b21; --ink: #e9ecf1; --ink-2: #b4bac4; --ink-3: #8a919c; --rule: #2a3039;
+    --accent: #ffb830; --pos: #3987e5; --neg: #e05656; --repo: #b48cff; --rider: #ff7aa8; --grid: #232830; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #101317; --surface: #171b21; --ink: #e9ecf1; --ink-2: #b4bac4; --ink-3: #8a919c; --rule: #2a3039;
+  --accent: #ffb830; --pos: #3987e5; --neg: #e05656; --repo: #b48cff; --rider: #ff7aa8; --grid: #232830; color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 400 1.0625rem/1.68 var(--f-body);
+  padding-inline: 20px; padding-block: 0 64px;
+}
+img { max-width: 100%; display: block; }
+a { color: inherit; text-decoration-color: var(--accent); text-decoration-thickness: 2px; text-underline-offset: 3px; }
+a:hover { color: var(--accent); }
+a:focus-visible, button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
+
+.col { max-width: var(--measure); margin-inline: auto; }
+.wide { max-width: 980px; margin-inline: auto; }
+
+/* masthead */
+.mast { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap;
+  max-width: 980px; margin: 0 auto; padding-block: 18px; border-bottom: 1px solid var(--rule);
+  font: 500 0.78rem/1 var(--f-mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); }
+.mast b { font: 700 1.15rem/1 var(--f-display); letter-spacing: 0.04em; color: var(--ink); }
+.mast nav { display: flex; gap: 18px; flex-wrap: wrap; }
+.mast nav a { text-decoration: none; }
+
+/* headline block */
+header.story { padding-block: 48px 28px; }
+.kicker { font: 500 0.78rem/1.3 var(--f-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); margin: 0 0 14px; }
+h1 { font: 700 clamp(2.3rem, 6vw, 3.9rem)/1.02 var(--f-display); letter-spacing: -0.005em; margin: 0 0 18px; text-wrap: balance; }
+.standfirst { font-size: 1.28rem; line-height: 1.5; color: var(--ink-2); margin: 0 0 22px; text-wrap: pretty; }
+.byline { display: flex; flex-wrap: wrap; gap: 6px 18px; font: 400 0.82rem/1.4 var(--f-mono); color: var(--ink-3); }
+.byline strong { color: var(--ink); font-weight: 500; }
+
+/* cover band: always the night map, in both themes (a deliberate single look) */
+.cover { margin-inline: -20px; background: #050a18 url("img/cover.webp") right center / cover no-repeat; position: relative; }
+.cover::before { content: ""; position: absolute; inset: 0;
+  background: linear-gradient(90deg, rgba(5, 10, 24, 0.97) 0%, rgba(5, 10, 24, 0.9) 38%, rgba(5, 10, 24, 0.35) 68%, rgba(5, 10, 24, 0.05) 100%); }
+.cover-inner { position: relative; max-width: 980px; margin-inline: auto; padding-inline: 20px; }
+.cover header.story { max-width: 610px; padding-block: 64px 56px; }
+.cover .kicker { color: #ffb830; }
+.cover h1 { color: #f3f5f9; }
+.cover .standfirst { color: #c3cad6; }
+.cover .byline { color: #9aa3b2; }
+.cover .byline strong { color: #f3f5f9; }
+.cover .credit { position: absolute; right: 12px; bottom: 8px; font: 400 0.68rem/1 var(--f-mono); color: rgba(195, 202, 214, 0.7); }
+figure.strip { margin-block: 48px 8px; }
+figure.strip img { width: 100%; height: auto; border-radius: 6px; }
+
+/* figures */
+figure { margin: 0; }
+figure.hero { margin-block: 8px 40px; }
+figure.hero img, figure.shot img { border-radius: 6px; border: 1px solid var(--rule); width: 100%; height: auto; }
+figcaption { font: 400 0.8rem/1.5 var(--f-mono); color: var(--ink-3); margin-top: 10px; }
+figcaption a { text-decoration-thickness: 1px; }
+
+/* body copy */
+article h2 { font: 700 2rem/1.1 var(--f-display); margin: 56px 0 14px; text-wrap: balance; }
+article h3 { font: 600 1.3rem/1.2 var(--f-display); letter-spacing: 0.01em; margin: 30px 0 8px; }
+article p { margin: 0 0 1.05em; }
+article ul { margin: 0 0 1.1em; padding-left: 1.2em; }
+article li { margin-bottom: 0.4em; }
+article li::marker { color: var(--accent); }
+.num { font-family: var(--f-mono); font-size: 0.92em; font-variant-numeric: tabular-nums; }
+code { font: 400 0.86em var(--f-mono); background: var(--surface); border: 1px solid var(--rule); border-radius: 3px; padding: 0 4px; }
+
+.takeaways { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 20px 22px 8px; margin-block: 0 8px; }
+.takeaways h2 { font: 600 0.8rem/1 var(--f-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); margin: 0 0 14px; }
+.takeaways ul { padding-left: 1.1em; }
+.takeaways li { margin-bottom: 0.65em; }
+
+blockquote.pull { margin: 36px 0; padding: 0 0 0 22px; border-left: 3px solid var(--accent);
+  font: 600 1.6rem/1.25 var(--f-display); color: var(--ink); text-wrap: balance; }
+blockquote.pull cite { display: block; margin-top: 10px; font: 400 0.8rem/1.4 var(--f-mono); font-style: normal; color: var(--ink-3); }
+
+.figure-block { margin-block: 28px 34px; }
+.breakout { width: min(980px, calc(100vw - 40px)); position: relative; left: 50%; transform: translateX(-50%); }
+.chart-title { font: 600 1.15rem/1.25 var(--f-display); margin: 0 0 4px; }
+.chart-sub { font: 400 0.8rem/1.45 var(--f-mono); color: var(--ink-3); margin: 0 0 12px; }
+.chart-wrap { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 14px 12px 8px; overflow-x: auto; position: relative; }
+.chart-wrap svg { display: block; width: 100%; height: auto; min-width: 480px; }
+.legend { display: flex; gap: 16px; flex-wrap: wrap; font: 400 0.76rem/1 var(--f-mono); color: var(--ink-2); margin: 8px 4px 6px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; }
+.legend .bar { width: 18px; height: 4px; border-radius: 2px; }
+.legend .line { width: 18px; height: 2px; border-radius: 0; }
+svg text { font-family: var(--f-mono); fill: var(--ink-2); }
+svg .t-strong { fill: var(--ink); font-weight: 500; }
+svg .grid { stroke: var(--grid); stroke-width: 1; }
+svg .zero { stroke: var(--ink-3); stroke-width: 1; }
+svg .hit { fill: transparent; cursor: default; }
+svg .hit:hover + .mark-dot, svg g.row:hover .mark-dot { r: 7; }
+details.data { margin-top: 8px; font: 400 0.8rem/1.5 var(--f-mono); color: var(--ink-2); }
+details.data summary { cursor: pointer; color: var(--ink-3); }
+details.data table { border-collapse: collapse; margin-top: 8px; font-variant-numeric: tabular-nums; }
+details.data th, details.data td { text-align: left; padding: 3px 14px 3px 0; border-bottom: 1px solid var(--rule); }
+.tip { position: absolute; pointer-events: none; background: var(--ink); color: var(--bg); font: 400 0.75rem/1.4 var(--f-mono);
+  padding: 6px 8px; border-radius: 4px; white-space: nowrap; transform: translate(-50%, calc(-100% - 10px)); }
+
+/* architecture diagram */
+.arch { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 14px; overflow-x: auto; }
+.arch svg { display: block; width: 100%; height: auto; min-width: 760px; }
+.arch .box { fill: var(--bg); stroke: var(--rule); stroke-width: 1.2; }
+.arch .box.core { stroke: var(--accent); stroke-width: 1.6; }
+.arch .lab { font: 600 15px var(--f-display); fill: var(--ink); letter-spacing: 0.01em; }
+.arch .sub { font: 400 10.5px var(--f-mono); fill: var(--ink-3); }
+.arch .lane { font: 500 10px var(--f-mono); fill: var(--accent); letter-spacing: 0.1em; }
+.arch .wire { stroke: var(--ink-3); stroke-width: 1.3; fill: none; }
+.arch .wire.kafka { stroke: var(--pos); }
+.arch .wire.move { stroke: var(--repo); stroke-dasharray: 5 4; }
+.arch .arrow { fill: var(--ink-3); }
+.arch .arrow.kafka { fill: var(--pos); }
+.arch .arrow.move { fill: var(--repo); }
+.arch .topic { font: 400 10px var(--f-mono); fill: var(--pos); }
+.arch .topic.move { fill: var(--repo); }
+
+.stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; background: var(--rule);
+  border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; margin-block: 24px 30px; }
+.stats div { background: var(--surface); padding: 14px 16px; min-width: 0; }
+.stats b { display: block; font: 700 1.9rem/1 var(--f-display); font-variant-numeric: tabular-nums; }
+.stats span { display: block; margin-top: 6px; font: 400 0.75rem/1.4 var(--f-mono); color: var(--ink-3); }
+
+.cta { display: flex; flex-wrap: wrap; gap: 12px; margin-block: 18px 8px; }
+.cta a { font: 600 1.05rem/1 var(--f-display); letter-spacing: 0.03em; text-decoration: none; padding: 12px 18px;
+  border-radius: 4px; border: 1.5px solid var(--ink); }
+.cta a.primary { background: var(--ink); color: var(--bg); }
+.cta a.primary:hover { background: var(--accent); border-color: var(--accent); color: #101317; }
+
+footer.end { max-width: var(--measure); margin: 56px auto 0; padding-top: 18px; border-top: 1px solid var(--rule);
+  font: 400 0.78rem/1.6 var(--f-mono); color: var(--ink-3); }
+
+@media (max-width: 700px) { .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 560px) {
+  body { font-size: 1rem; padding-inline: 16px; }
+  .standfirst { font-size: 1.12rem; }
+  .cover { margin-inline: -16px; background-position: 70% center; }
+  .cover::before { background: linear-gradient(180deg, rgba(5, 10, 24, 0.92) 0%, rgba(5, 10, 24, 0.86) 100%); }
+  .cover-inner { padding-inline: 16px; }
+  .cover header.story { padding-block: 40px 36px; }
+  blockquote.pull { font-size: 1.35rem; }
+  article h2 { font-size: 1.7rem; }
+}
+/* animated explainers */
+.anim { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 12px; overflow-x: auto; }
+.anim svg { display: block; width: 100%; height: auto; min-width: 460px; }
+.anim .street { stroke: var(--grid); stroke-width: 6; stroke-linecap: round; }
+.anim .phase { font: 600 16px var(--f-display); fill: var(--ink); letter-spacing: 0.01em; }
+.anim .note { font: 400 11.5px var(--f-mono); fill: var(--ink-2); }
+.anim .big { font: 700 15px var(--f-display); fill: var(--ink); }
+.anim .rider { fill: none; stroke: var(--rider); stroke-width: 2.5; }
+.anim .driver { fill: var(--pos); stroke: var(--surface); stroke-width: 2; }
+.anim .route { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.anim .route.bad { stroke: var(--neg); }
+.anim .tag { font: 500 11px var(--f-mono); fill: var(--ink); }
+.anim .tag.bad { fill: var(--neg); }
+.anim .x { stroke: var(--neg); stroke-width: 3; stroke-linecap: round; }
+.anim .lane { stroke: var(--rule); stroke-width: 1.5; }
+.anim .lanelab { font: 400 11px var(--f-mono); fill: var(--ink-3); }
+.anim .chip { fill: var(--pos); }
+.anim .chip.slow { fill: var(--accent); }
+.anim .chiptxt { font: 500 10px var(--f-mono); fill: var(--surface); }
+.anim .mbox { fill: var(--bg); stroke: var(--rule); stroke-width: 1.2; }
+.anim .mbox.fire { stroke: var(--repo); stroke-width: 2.5; }
+.anim .wm { font: 600 13px var(--f-mono); fill: var(--ink); }
+.anim .fired { font: 600 14px var(--f-display); fill: var(--repo); }
+.anim-cap { font: 400 0.8rem/1.5 var(--f-mono); color: var(--ink-3); margin-top: 10px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+</head>
+<body>
+
+<div class="mast">
+  <span><b>RideSync</b> &nbsp;/&nbsp; project write-up</span>
+  <nav>
+    <a href="../">Watch the replay</a>
+    <a href="https://github.com/VivekKN001/RideSync">Code</a>
+    <a href="https://github.com/VivekKN001/RideSync/blob/main/experiments/FINDINGS.md">Full findings</a>
+  </nav>
+</div>
+
+<section class="cover">
+<div class="cover-inner">
+<header class="story">
+  <p class="kicker">Real-time systems · Ride-hailing · New York City</p>
+  <h1>Can a smarter dispatcher get more New Yorkers a ride without adding a single car?</h1>
+  <p class="standfirst">RideSync rebuilds the decision a ride-hailing app makes a few thousand times an hour (which driver goes to which rider) and measures, on 31 months of real Manhattan trips, which ideas actually pay off. Then it runs the whole thing live, over Kafka and Flink.</p>
+  <div class="byline">
+    <span>By <strong>Vivek K N</strong></span>
+    <span>1 October 2026</span>
+    <span>12 min read</span>
+  </div>
+</header>
+</div>
+<span class="credit">Illustration</span>
+</section>
+
+<figure class="hero wide" style="margin-top: 36px">
+  <img src="img/replay.webp" width="1100" height="653" alt="Animated map of Manhattan around 18:00 on Wednesday 15 July 2026, replayed at 40 times real speed: pink rings are waiting riders, amber drivers head to pickups with a line to the rider, blue drivers carry passengers, and orange zones are short of drivers.">
+  <figcaption>Wednesday 15 July 2026 around 18:00, replayed from real trip records at 40× real time. Pink: riders waiting. Amber: drivers on the way to a pickup. Blue: drivers with a passenger. Violet: idle drivers the platform moves toward expected demand. Orange zones: more requests than free drivers. <a href="../">Play the whole evening in your browser</a>.</figcaption>
+</figure>
+
+<article class="col">
+
+<section class="takeaways" aria-labelledby="tk">
+  <h2 id="tk">Key takeaways</h2>
+  <ul>
+    <li>Waiting 30&nbsp;seconds and matching riders to drivers as a batch, instead of sending the nearest driver at once, serves <strong>+7.5% more trips</strong> when drivers are scarce. The gain follows scarcity almost exactly.</li>
+    <li>An honest pickup estimate matters as much as the matching. A learned ETA adds <strong>+8.3% trips</strong> once riders cancel on late drivers.</li>
+    <li>Surge pricing only helps if it brings more drivers online. With a fixed fleet it just prices riders out (<strong>&minus;4.3%</strong>).</li>
+    <li>Every result holds on all 19 Wednesday evenings of four test months across a year. Each was a paired comparison over seeded runs, never a single run.</li>
+    <li>The live system, run with zero latency, reproduces the offline simulator bit for bit, so what it measures offline is what it runs live.</li>
+  </ul>
+</section>
+
+<h2>The problem: the nearest driver is a short-sighted rule</h2>
+<p>When you ask for a car, the platform has a few seconds to choose a driver while new requests and driver positions keep arriving. The obvious rule is to send the nearest free driver the moment the request comes in. It is simple, it feels fair, and it is short-sighted.</p>
+<p>It can spend the only driver near one rider on another rider who had other options. When drivers are scarce, a freed driver goes to whoever has waited longest, however far away that is, which means long pickups. And riders cancel when they see a long quoted wait, or when the driver they were promised is late. Every one of those bad decisions costs something you can measure: minutes of waiting, trips that never happen, and drivers driving empty.</p>
+
+<div class="figure-block">
+  <p class="chart-title">Nearest driver vs a batch, in slow motion</p>
+  <p class="chart-sub">Two riders, two drivers, one avenue. Minutes are driving time.</p>
+  <div class="anim" id="anim-match" role="img" aria-label="Animation. With the nearest-driver rule, rider 1 takes the driver one minute away, so rider 2 is offered a driver seven minutes away and cancels. Batching both requests and solving them together sends the drivers four and two minutes, and both riders are picked up."></div>
+  <p class="anim-cap">Sending the nearest driver at once looks best for rider 1 and leaves rider 2 a 7-minute wait, so they cancel. Matching both together costs rider 1 three extra minutes and serves both. That trade, made thousands of times an evening, is what batching buys.</p>
+</div>
+<p>Matching is not the only question. How long will the pickup really take? Where will demand be in 15 minutes? Should prices rise? Where should an idle driver wait? A real platform answers all of them over streams of events that arrive late and out of order, from services that restart, and the numbers still have to add up.</p>
+
+<h2>What RideSync does</h2>
+<p>RideSync is a complete dispatch system built to test those ideas against each other, on real New York demand, with the negative results reported next to the positive ones.</p>
+<h3>Batch, then solve the batch optimally</h3>
+<p>Requests are collected for a few seconds. Each batch becomes a minimum-cost bipartite matching between waiting riders and available drivers, solved with the Hungarian algorithm (written from scratch, and checked against SciPy and brute force). Drivers who will finish their current trip within two minutes count as supply too.</p>
+<h3>A cost that counts what riders do</h3>
+<p>The cost of a pairing is not just distance. It covers the pickup time, how likely this rider is to cancel at that wait, and how long they have already waited, so nobody is starved. A match, once made, is never revisited.</p>
+<h3>Models where they earn their place</h3>
+<p>A demand forecast per taxi zone every 15 minutes, a learned correction to road-network travel times with an 80% range, a fare model, a surge-pricing policy with simulated price sensitivity, and a planner that moves idle drivers toward where demand is expected.</p>
+
+<h2>How it is built</h2>
+<p>There are two modes and one matcher. The offline mode is a seeded discrete-event simulator that runs a three-hour evening in about a second, so every idea can be tested on many days and seeds. The live mode runs the same world as a service, paced to the wall clock, talking to a separate matcher service over Kafka.</p>
+
+<div class="figure-block breakout">
+  <p class="chart-title">The live system</p>
+  <p class="chart-sub">The simulator is the world and has the final word; the matcher proposes. Blue lines are Kafka topics; the dashed violet line is the repositioning plan added in the last milestone.</p>
+  <div class="arch" role="img" aria-label="Architecture: the live simulator publishes rider and driver events to Kafka; the matcher service reads them, solves batches and sends offers and repositioning moves back; Flink computes per-zone features for the pricing service; ClickHouse, Postgres and Grafana store and show history; a FastAPI service drives the live map.">
+    <svg viewBox="0 0 940 420" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrow" d="M0,0 L10,5 L0,10 z"/></marker>
+        <marker id="ahk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrow kafka" d="M0,0 L10,5 L0,10 z"/></marker>
+        <marker id="ahm" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrow move" d="M0,0 L10,5 L0,10 z"/></marker>
+      </defs>
+      <text class="lane" x="20" y="22">DATA &amp; MODELS</text>
+      <text class="lane" x="300" y="22">THE WORLD</text>
+      <text class="lane" x="610" y="22">THE PLATFORM</text>
+
+      <rect class="box" x="20" y="40" width="220" height="62" rx="5"/>
+      <text class="lab" x="34" y="66">NYC TLC trips</text>
+      <text class="sub" x="34" y="86">31 months, Jan 2024 – Jul 2026</text>
+      <rect class="box" x="20" y="118" width="220" height="62" rx="5"/>
+      <text class="lab" x="34" y="144">OpenStreetMap + OSRM</text>
+      <text class="sub" x="34" y="164">road times fitted to real trips</text>
+      <rect class="box" x="20" y="196" width="220" height="62" rx="5"/>
+      <text class="lab" x="34" y="222">Models</text>
+      <text class="sub" x="34" y="242">demand · ETA · fares</text>
+
+      <rect class="box core" x="300" y="70" width="250" height="150" rx="5"/>
+      <text class="lab" x="316" y="98">Live simulator</text>
+      <text class="sub" x="316" y="118">same engine as offline, paced at N×</text>
+      <text class="sub" x="316" y="138">riders request, wait, cancel</text>
+      <text class="sub" x="316" y="156">drivers drive, drift, log on and off</text>
+      <text class="sub" x="316" y="174">accepts or rejects every offer</text>
+      <text class="sub" x="316" y="192">and every move, with a reason</text>
+
+      <rect class="box core" x="640" y="70" width="270" height="150" rx="5"/>
+      <text class="lab" x="656" y="98">Matcher service</text>
+      <text class="sub" x="656" y="118">rebuilds the world from events</text>
+      <text class="sub" x="656" y="138">every 30 s of event time:</text>
+      <text class="sub" x="656" y="156">ETA matrix → Hungarian → offers</text>
+      <text class="sub" x="656" y="174">every 5 min: repositioning plan</text>
+      <text class="sub" x="656" y="192">watermarks per Kafka partition</text>
+
+      <path class="wire kafka" d="M550,105 L640,105" marker-end="url(#ahk)"/>
+      <text class="topic" x="558" y="98">world events</text>
+      <path class="wire kafka" d="M640,150 L550,150" marker-end="url(#ahk)"/>
+      <text class="topic" x="572" y="143">offers</text>
+      <path class="wire move" d="M640,190 L550,190" marker-end="url(#ahm)"/>
+      <text class="topic move" x="566" y="183">moves</text>
+
+      <path class="wire" d="M240,71 L300,110" marker-end="url(#ah)"/>
+      <path class="wire" d="M240,149 L300,150" marker-end="url(#ah)"/>
+      <path class="wire" d="M240,227 C470,300 700,280 760,222" marker-end="url(#ah)"/>
+
+      <rect class="box" x="300" y="290" width="206" height="56" rx="5"/>
+      <text class="lab" x="314" y="314">Flink (PyFlink)</text>
+      <text class="sub" x="314" y="333">per-zone, per-minute features</text>
+      <rect class="box" x="524" y="290" width="136" height="56" rx="5"/>
+      <text class="lab" x="538" y="314">Pricing service</text>
+      <text class="sub" x="538" y="333">surge per zone</text>
+      <rect class="box" x="300" y="356" width="360" height="50" rx="5"/>
+      <text class="lab" x="314" y="378">ClickHouse · Postgres → Grafana</text>
+      <text class="sub" x="314" y="396">event history, trip ledger, dashboards</text>
+      <rect class="box" x="690" y="300" width="220" height="56" rx="5"/>
+      <text class="lab" x="704" y="324">Live map</text>
+      <text class="sub" x="704" y="343">FastAPI + WebSocket + deck.gl</text>
+
+      <path class="wire kafka" d="M380,220 L380,290" marker-end="url(#ahk)"/>
+      <path class="wire kafka" d="M506,318 L524,318" marker-end="url(#ahk)"/>
+      <path class="wire kafka" d="M592,290 C592,250 525,240 510,222" marker-end="url(#ahk)"/>
+      <path class="wire kafka" d="M300,200 C270,260 270,370 300,380" marker-end="url(#ahk)"/>
+      <path class="wire kafka" d="M540,220 C600,270 690,300 700,310" marker-end="url(#ahk)"/>
+    </svg>
+  </div>
+</div>
+
+<div class="figure-block">
+  <p class="chart-title">Why the matcher waits for the slowest partition</p>
+  <p class="chart-sub">Each Kafka partition carries the simulator's clock ticks. The matcher solves the 30 s batch only when every partition has passed 30 s.</p>
+  <div class="anim" id="anim-wm" role="img" aria-label="Animation. Three partitions deliver clock ticks to the matcher; partition 2 is slower. The watermark is the lowest tick across partitions, and the batch for 30 seconds fires only once partition 2's tick for 30 seconds arrives."></div>
+  <p class="anim-cap">If the matcher fired as soon as the fast partitions reached 30 s, a rider whose request was still in flight on partition 2 would be missing from the batch. Waiting for the minimum is what makes the live results identical to offline.</p>
+</div>
+
+<p>Three design choices keep the live system honest.</p>
+<ul>
+  <li><strong>Event time, not wall time.</strong> The simulator writes a "tick" to every partition of the world topics. The matcher's watermark is the oldest of them, because Kafka only keeps order within a partition. A batch fires only when every event up to its boundary has been read, so results don't depend on how fast the replay runs.</li>
+  <li><strong>The world decides, the platform proposes.</strong> An offer for a rider who already left, or a driver who is no longer free, is rejected with a reason. Offers and moves carry ids, so a message delivered twice does nothing.</li>
+  <li><strong>Proof that going live loses nothing.</strong> A lockstep runner puts both services on an in-memory bus with zero latency. Its results are identical to the offline simulator, bit for bit, with 1 or 3 partitions and with messages delivered out of order. Any difference in a real Kafka run therefore comes from latency alone.</li>
+</ul>
+
+<figure class="strip breakout">
+  <img src="img/grid-heatmap.webp" width="1536" height="576" loading="lazy" alt="Illustration: a night aerial of city blocks on the left dissolving into glowing orange and blue squares on the right, like a demand heatmap.">
+  <figcaption>Illustration. Trip records arrive as taxi zones, so the simulator sees the city as a grid of zones with demand in each.</figcaption>
+</figure>
+
+<h2>Real New York, not a toy city</h2>
+<p>Riders are replayed from the NYC Taxi &amp; Limousine Commission's records of every Uber and Lyft trip in Manhattan. Drives follow the road network, with times fitted to real trip durations. The data runs from January 2024 to July 2026: 31 monthly files of about half a gigabyte each, reduced to 8 MB per month on a laptop.</p>
+<p>Recency matters. New York started congestion pricing in January 2025, which changed traffic and fares in the very area simulated: July 2026 traffic is 8% slower than March 2024, and the new fee is charged on 81% of Manhattan trips. So the models train on the months since, and every test day comes after its training data.</p>
+
+<div class="stats" role="list">
+  <div role="listitem"><b>31</b><span>months of real trips</span></div>
+  <div role="listitem"><b>27</b><span>test days across a year</span></div>
+  <div role="listitem"><b>17.8%</b><span>demand forecast error per zone, 15 min ahead (best baseline 22.4%)</span></div>
+  <div role="listitem"><b>24%</b><span>ETA error, learned (road network alone: 41%)</span></div>
+</div>
+
+<h2>What it found</h2>
+<p>Every number below is a paired comparison: the same riders, the same driver decisions and the same random draws under each policy, over six seeds. That isolates the policy from the luck of the day. The latest round went further and ran every experiment on every Wednesday evening of October 2025 and January, April and July 2026, treating days as the units, so the intervals include ordinary day-to-day variation.</p>
+
+<div class="figure-block">
+  <p class="chart-title">Six effects, 19 Wednesday evenings</p>
+  <p class="chart-sub">Change in trips served per hour against each baseline, % · dot: mean over days · thick bar: 95% interval · thin line: lowest to highest day</p>
+  <div class="chart-wrap" id="effects"></div>
+  <div class="legend" aria-hidden="true"><span><i style="background:var(--pos)"></i>gains</span><span><i style="background:var(--neg)"></i>loss</span><span><i class="bar" style="background:var(--ink-3)"></i>95% interval</span><span><i class="line" style="background:var(--ink-3)"></i>range of days</span></div>
+  <details class="data"><summary>Table view</summary><table id="effects-table"></table></details>
+</div>
+
+<h3>Batching pays exactly when drivers are scarce</h3>
+<p>With 300 drivers on a Manhattan evening, batching for 30 seconds with the cancellation-aware cost serves 7.5% more trips. With 500 drivers the gain all but disappears, because when drivers are plentiful the nearest one is usually the right one. The size of the gain varies from +2.6% to +13.2% between ordinary Wednesdays, and the chart below shows why: it follows how short of drivers that evening was almost exactly.</p>
+
+<div class="figure-block">
+  <p class="chart-title">The scarcer the evening, the more batching helps</p>
+  <p class="chart-sub">Each dot is one Wednesday evening, 300 drivers · x: share of riders who cancel under instant dispatch · y: extra trips/h from batching, % · correlation 0.97</p>
+  <div class="chart-wrap" id="scarcity"></div>
+  <details class="data"><summary>Table view</summary><table id="scarcity-table"></table></details>
+</div>
+
+<p>At the full scale of the city the optimal solver itself starts to matter. Batches then hold 100 to 325 riders, greedy matching is worse in nearly nine batches out of ten, and the Hungarian solve adds about 250 trips an hour at 4,000 drivers. At a 10% sample it barely beats greedy, a reminder that a result measured on a small model of a system can flip at full size.</p>
+
+<h3>An honest ETA is worth as much as clever matching</h3>
+<p>If riders only cancelled on long quotes, an optimistic ETA would look free. Once they also give up on drivers who are late against the quote, as real riders do, the learned ETA serves 8.3% more trips than a solid distance-by-hour table, on every one of the 19 evenings, and 12% more on Saturday nights.</p>
+
+<h3>Surge is a way to get more drivers, not to share out the ones you have</h3>
+<p>With a fixed fleet, surge pricing loses trips on every day tested: it prices some riders out and changes nothing else. When a reserve of drivers logs on in response to higher prices, the same policy serves 8% more trips at 300 drivers and lifts drivers' earnings per online hour by about a third. Drivers who only chase surge add nothing: they empty the areas they leave.</p>
+
+<blockquote class="pull">“With slack in the fleet, moving idle drivers for free beats charging riders more.”<cite>From the findings, M6b and M7</cite></blockquote>
+
+<h3>Moving idle drivers is the biggest lever in the morning</h3>
+<p>The morning peak is a different problem from the evening. Commuters flow one way and leave idle cars stranded behind them. There, coordinated repositioning serves 6.6% to 7.2% more trips in every test month, while batching gives little. Drivers drifting to usual hot spots on their own don't help, because nobody coordinates them and they bunch.</p>
+
+<h2>Going live</h2>
+<p>Run over a real Kafka broker at 10 to 60 times real speed, going live costs riders 1.4 to 4.2 seconds of extra wait and nothing else; a batch is solved 15 to 22 milliseconds after its watermark. Latency is the only difference, and at real-world speed it shrinks further.</p>
+<p>The final milestone took the last offline-only behaviours live: the platform's repositioning plan, drivers who log on and off as prices change, and riders who give up on late drivers. The planning moved into the matcher service, which builds its own view of the fleet from events. Two details made it exact. A repositioning driver's status carries its route, so the matcher dispatches it from where it is on the way. And because Kafka doesn't keep an offer's answer and the driver's new status in order, the matcher waits for the status before planning, so it never moves a driver it believes idle who has just been matched.</p>
+<p id="m10-live">With all of that switched on, the zero-latency run is still identical to the offline simulator. Over a real Kafka broker at 10 times real speed, on a July evening with 500 drivers, the live system matched offline within 0.02 percentage points of cancellations and 1.9 seconds of wait, and all 2,723 repositioning moves the matcher sent were carried out. At 30 times speed the same network delays cost three times as much simulated time, and 1% of offers arrived too late. At real speed they would cost a tenth of what they do at 10×.</p>
+
+<figure class="shot">
+  <img src="img/grafana.webp" width="1600" height="1250" loading="lazy" alt="Grafana dashboard during a live run: request, match and cancellation counts per minute from Flink, riders waiting against drivers available per batch, offer outcomes, matcher latency, zones under pressure and surge prices.">
+  <figcaption>The Grafana dashboard during a live run at 10×: flows per minute from Flink, the matcher's batches and latency, offer outcomes, zones under pressure and surge prices. All of it reads from ClickHouse and Postgres through read-only users.</figcaption>
+</figure>
+
+<h2>What it can't tell you</h2>
+<ul>
+  <li><strong>Behaviour is assumed.</strong> No public data exists on how patient riders are, how they react to price, or how drivers respond to surge. The experiments vary these instead of claiming one true value.</li>
+  <li><strong>Zones, not addresses.</strong> The trip records give taxi zones, not coordinates, so trip ends are placed inside their zones. That sets a floor under ETA accuracy, and the project measures it.</li>
+  <li><strong>Road times and full scale on July only.</strong> The 27 test days run on a 10% sample with calibrated straight-line times. Road-network times and the full city were run on July's days; the complete full-scale grid takes hours per run and is left running in the background.</li>
+  <li><strong>One machine.</strong> Kafka has one broker and no replication. The live stack is a faithful demo, not a production deployment.</li>
+</ul>
+
+<h2>Try it</h2>
+<p>The recorded evening plays in any browser with nothing to install. The code runs on a laptop: the demo mode needs no Docker at all, and the full stack (Kafka, Flink, ClickHouse, Postgres, Grafana, OSRM) starts with Docker Compose. Every number in this post comes from a saved run and can be regenerated without simulating again.</p>
+<div class="cta">
+  <a class="primary" href="../">Watch the replay</a>
+  <a href="https://github.com/VivekKN001/RideSync">Read the code</a>
+  <a href="https://github.com/VivekKN001/RideSync/blob/main/experiments/FINDINGS.md">All findings</a>
+</div>
+
+</article>
+
+<footer class="end">
+  RideSync is a portfolio project by Vivek K N. Trip data: NYC Taxi &amp; Limousine Commission, high-volume for-hire vehicle records. Maps: OpenStreetMap contributors. Built with Python, NumPy, SciPy, scikit-learn, Apache Kafka, Apache Flink (PyFlink), ClickHouse, PostgreSQL, Grafana, FastAPI and deck.gl.
+</footer>
+
+<script>
+(function () {
+  const NS = "http://www.w3.org/2000/svg";
+  const el = (tag, attrs, parent) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; };
+  const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+  function tooltip(wrap) {
+    const t = document.createElement("div"); t.className = "tip"; t.hidden = true; wrap.appendChild(t);
+    return {
+      show(html, evt) {
+        const r = wrap.getBoundingClientRect();
+        t.innerHTML = html; t.hidden = false;
+        t.style.left = (evt.clientX - r.left + wrap.scrollLeft) + "px"; t.style.top = (evt.clientY - r.top) + "px";
+      },
+      hide() { t.hidden = true; },
+    };
+  }
+
+  // ---------------------------------------------------------------- effects across 19 evenings
+  const EFFECTS = [
+    ["Learned ETA vs distance×hour", "400 drivers", 8.3, 0.7, 5.1, 10.1],
+    ["Surge, drivers who respond", "300 drivers", 8.0, 1.7, 2.3, 12.7],
+    ["Batching vs nearest driver", "300 drivers", 7.5, 1.8, 2.6, 13.2],
+    ["Repositioning vs staying put", "500 drivers", 2.3, 0.2, 1.4, 3.3],
+    ["Batching vs nearest driver", "400 drivers", 1.7, 0.6, 0.1, 4.9],
+    ["Surge, fixed fleet", "300 drivers", -4.3, 0.4, -5.6, -2.7],
+  ];
+  function drawEffects() {
+    const wrap = document.getElementById("effects"); wrap.innerHTML = "";
+    const W = 600, rowH = 50, top = 14, left = 250, right = 18, H = top + EFFECTS.length * rowH + 34;
+    const lo = -8, hi = 16, x = (v) => left + (v - lo) / (hi - lo) * (W - left - right);
+    const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Mean change in trips per hour over 19 evenings for six policies; the table view lists the values." }, wrap);
+    for (let v = lo; v <= hi; v += 4) {
+      el("line", { class: v === 0 ? "zero" : "grid", x1: x(v), x2: x(v), y1: top - 6, y2: H - 28 }, svg);
+      const t = el("text", { x: x(v), y: H - 10, "text-anchor": "middle", "font-size": 11 }, svg); t.textContent = (v > 0 ? "+" : "") + v + "%";
+    }
+    const tip = tooltip(wrap);
+    EFFECTS.forEach(([name, fleet, m, ci, mn, mx], i) => {
+      const cy = top + i * rowH + rowH / 2, color = m >= 0 ? css("--pos") : css("--neg");
+      const g = el("g", { class: "row" }, svg);
+      const a = el("text", { x: 0, y: cy - 3, "font-size": 12.5, class: "t-strong" }, g); a.textContent = name;
+      const b = el("text", { x: 0, y: cy + 13, "font-size": 11 }, g); b.textContent = fleet;
+      el("line", { x1: x(mn), x2: x(mx), y1: cy, y2: cy, stroke: color, "stroke-width": 2, "stroke-opacity": 0.45, "stroke-linecap": "round" }, g);
+      el("line", { x1: x(m - ci), x2: x(m + ci), y1: cy, y2: cy, stroke: color, "stroke-width": 7, "stroke-linecap": "round" }, g);
+      el("circle", { class: "mark-dot", cx: x(m), cy, r: 5.5, fill: color, stroke: css("--surface"), "stroke-width": 2 }, g);
+      const lab = el("text", { x: m >= 0 ? x(mx) + 8 : x(mn) - 8, y: cy + 4, "font-size": 12, "text-anchor": m >= 0 ? "start" : "end", class: "t-strong" }, g);
+      lab.textContent = (m > 0 ? "+" : "") + m.toFixed(1) + "%";
+      const hit = el("rect", { class: "hit", x: 0, y: cy - rowH / 2, width: W, height: rowH }, g);
+      hit.addEventListener("mousemove", (e) => tip.show(`<b>${name}</b> · ${fleet}<br>mean ${(m > 0 ? "+" : "") + m}% ± ${ci} · days ${mn}% to ${mx}%`, e));
+      hit.addEventListener("mouseleave", () => tip.hide());
+    });
+    const tb = document.getElementById("effects-table");
+    tb.innerHTML = "<tr><th>Policy</th><th>Fleet</th><th>Mean</th><th>95% CI</th><th>Lowest day</th><th>Highest day</th></tr>" +
+      EFFECTS.map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}%</td><td>±${r[3]}</td><td>${r[4]}%</td><td>${r[5]}%</td></tr>`).join("");
+  }
+
+  // ---------------------------------------------------------------- batching gain vs scarcity
+  const DAYS = [
+    ["Wed 28 Jan 2026", 12.2, 2.9], ["Wed 7 Jan 2026", 13.2, 2.6], ["Wed 1 Apr 2026", 14.1, 2.7], ["Wed 14 Jan 2026", 14.2, 2.9],
+    ["Wed 8 Jul 2026", 19.2, 2.8], ["Wed 22 Jul 2026", 20.3, 4.3], ["Wed 1 Oct 2025", 22.9, 5.4], ["Wed 29 Jul 2026", 23.8, 5.7],
+    ["Wed 1 Jul 2026", 24.8, 6.1], ["Wed 15 Apr 2026", 29.5, 8.4], ["Wed 21 Jan 2026", 31.4, 11.7], ["Wed 29 Apr 2026", 32.2, 8.5],
+    ["Wed 15 Jul 2026", 33.5, 10.9], ["Wed 8 Apr 2026", 35.2, 9.8], ["Wed 22 Apr 2026", 35.9, 9.4], ["Wed 22 Oct 2025", 37.1, 11.7],
+    ["Wed 29 Oct 2025", 38.7, 11.3], ["Wed 15 Oct 2025", 39.1, 12.2], ["Wed 8 Oct 2025", 42.6, 13.2],
+  ];
+  function drawScarcity() {
+    const wrap = document.getElementById("scarcity"); wrap.innerHTML = "";
+    const W = 600, H = 320, l = 46, r = 14, t = 16, b = 44;
+    const x = (v) => l + (v - 10) / (45 - 10) * (W - l - r), y = (v) => t + (1 - v / 14) * (H - t - b);
+    const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Scatter of 19 evenings: batching gain rises from about 3% to 13% as the instant-dispatch cancellation rate rises from 12% to 43%." }, wrap);
+    for (let v = 0; v <= 14; v += 2) {
+      el("line", { class: "grid", x1: l, x2: W - r, y1: y(v), y2: y(v) }, svg);
+      const tx = el("text", { x: l - 8, y: y(v) + 4, "text-anchor": "end", "font-size": 11 }, svg); tx.textContent = "+" + v + "%";
+    }
+    for (let v = 10; v <= 45; v += 5) {
+      const tx = el("text", { x: x(v), y: H - b + 18, "text-anchor": "middle", "font-size": 11 }, svg); tx.textContent = v + "%";
+    }
+    const xl = el("text", { x: (l + W - r) / 2, y: H - 6, "text-anchor": "middle", "font-size": 11 }, svg); xl.textContent = "riders cancelling under instant dispatch (how scarce drivers are)";
+    // least-squares line, drawn behind the dots
+    const n = DAYS.length, mx = DAYS.reduce((s, d) => s + d[1], 0) / n, my = DAYS.reduce((s, d) => s + d[2], 0) / n;
+    const k = DAYS.reduce((s, d) => s + (d[1] - mx) * (d[2] - my), 0) / DAYS.reduce((s, d) => s + (d[1] - mx) ** 2, 0);
+    el("line", { x1: x(11), y1: y(my + k * (11 - mx)), x2: x(44), y2: y(my + k * (44 - mx)), stroke: css("--ink-3"), "stroke-width": 1.5, "stroke-dasharray": "4 4" }, svg);
+    const tip = tooltip(wrap);
+    DAYS.forEach(([d, c, g]) => {
+      const dot = el("circle", { cx: x(c), cy: y(g), r: 6, fill: css("--pos"), stroke: css("--surface"), "stroke-width": 2 }, svg);
+      const hit = el("circle", { class: "hit", cx: x(c), cy: y(g), r: 13 }, svg);
+      hit.addEventListener("mousemove", (e) => { dot.setAttribute("r", 8); tip.show(`<b>${d}</b><br>cancel ${c}% · batching +${g}%`, e); });
+      hit.addEventListener("mouseleave", () => { dot.setAttribute("r", 6); tip.hide(); });
+    });
+    const jan = DAYS.find(d => d[0] === "Wed 21 Jan 2026");
+    const ann = el("text", { x: x(jan[1]) - 10, y: y(jan[2]) - 12, "text-anchor": "end", "font-size": 11, class: "t-strong" }, svg);
+    ann.textContent = "21 Jan: the one busy January evening";
+    const tb = document.getElementById("scarcity-table");
+    tb.innerHTML = "<tr><th>Evening</th><th>Cancel, instant</th><th>Batching gain</th></tr>" +
+      DAYS.map(r => `<tr><td>${r[0]}</td><td>${r[1]}%</td><td>+${r[2]}%</td></tr>`).join("");
+  }
+
+  // ---------------------------------------------------------------- animations
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  function whenVisible(node, start, stop) {
+    if (!("IntersectionObserver" in window)) { start(); return; }
+    new IntersectionObserver((es) => es.forEach((e) => (e.isIntersecting ? start() : stop())), { threshold: 0.2 }).observe(node);
+  }
+
+  // Nearest driver vs batch. One avenue, x in minutes of driving; riders and drivers sit on it.
+  function animMatch() {
+    const wrap = document.getElementById("anim-match");
+    const W = 600, H = 220, X = (m) => 50 + m * 52, Y = 120;
+    const svg = el("svg", { viewBox: `0 0 ${W} ${H}` }, wrap);
+    el("line", { class: "street", x1: X(0) - 20, x2: X(10) + 20, y1: Y, y2: Y }, svg);
+    for (let m = 0; m <= 10; m++) el("line", { x1: X(m), x2: X(m), y1: Y - 4, y2: Y + 4, stroke: css("--ink-3"), "stroke-width": 1 }, svg);
+    const phase = el("text", { class: "phase", x: 20, y: 30 }, svg);
+    const note = el("text", { class: "note", x: 20, y: 50 }, svg);
+    const big = el("text", { class: "big", x: 20, y: 200 }, svg);
+    // R2 at 0, D1 at 2, R1 at 3, D2 at 7
+    const P = { R2: 0, D1: 2, R1: 3, D2: 7 };
+    const label = (txt, m, dy) => { const t = el("text", { class: "note", x: X(m), y: Y + dy, "text-anchor": "middle" }, svg); t.textContent = txt; return t; };
+    const r1 = el("circle", { class: "rider", cx: X(P.R1), cy: Y, r: 9 }, svg), r2 = el("circle", { class: "rider", cx: X(P.R2), cy: Y, r: 9 }, svg);
+    const l1 = label("rider 1", P.R1, 34), l2 = label("rider 2", P.R2, 34);
+    label("driver A", P.D1, -26); label("driver B", P.D2, -26);
+    const routes = [0, 1].map(() => el("path", { class: "route", d: "" }, svg));
+    const tags = [0, 1].map(() => el("text", { class: "tag", y: Y - 44, "text-anchor": "middle" }, svg));
+    const dA = el("circle", { class: "driver", cx: X(P.D1), cy: Y, r: 8 }, svg), dB = el("circle", { class: "driver", cx: X(P.D2), cy: Y, r: 8 }, svg);
+    const xmark = el("g", { opacity: 0 }, svg);
+    el("line", { class: "x", x1: X(P.R2) - 9, y1: Y - 9, x2: X(P.R2) + 9, y2: Y + 9 }, xmark);
+    el("line", { class: "x", x1: X(P.R2) + 9, y1: Y - 9, x2: X(P.R2) - 9, y2: Y + 9 }, xmark);
+
+    let timers = [], raf = 0, running = false;
+    const at = (ms, fn) => timers.push(setTimeout(fn, ms));
+    function drive(i, car, from, to, bad, ms, text) {
+      const y = Y - 14 - i * 8, x0 = X(from), x1 = X(to);
+      routes[i].setAttribute("class", "route" + (bad ? " bad" : ""));
+      tags[i].setAttribute("class", "tag" + (bad ? " bad" : "")); tags[i].setAttribute("x", (x0 + x1) / 2); tags[i].textContent = text;
+      const t0 = performance.now();
+      const step = (now) => {
+        const k = Math.min((now - t0) / ms, 1), x = x0 + (x1 - x0) * k;
+        routes[i].setAttribute("d", `M${x0},${Y} L${x0},${y} L${x},${y}` + (k === 1 ? ` L${x1},${Y}` : ""));
+        car.setAttribute("cx", x); car.setAttribute("cy", k === 1 ? Y : y);
+        if (k < 1 && running) raf = requestAnimationFrame(step);
+      };
+      raf = requestAnimationFrame(step);
+    }
+    function reset() {
+      routes.forEach((r) => r.setAttribute("d", "")); tags.forEach((t) => (t.textContent = ""));
+      dA.setAttribute("cx", X(P.D1)); dA.setAttribute("cy", Y); dB.setAttribute("cx", X(P.D2)); dB.setAttribute("cy", Y);
+      [r1, r2, l1, l2].forEach((n) => n.setAttribute("opacity", 0)); xmark.setAttribute("opacity", 0); big.textContent = "";
+    }
+    function batchFinal() {  // the still frame for reduced motion
+      reset(); phase.textContent = "Batch: wait 30 s, then match everyone together"; note.textContent = "both requests, solved as one assignment";
+      [r1, r2, l1, l2].forEach((n) => n.setAttribute("opacity", 1));
+      routes[0].setAttribute("d", `M${X(P.D2)},${Y} L${X(P.D2)},${Y - 14} L${X(P.R1)},${Y - 14} L${X(P.R1)},${Y}`); tags[0].setAttribute("x", (X(P.D2) + X(P.R1)) / 2); tags[0].textContent = "B: 4 min";
+      routes[1].setAttribute("d", `M${X(P.D1)},${Y} L${X(P.D1)},${Y - 22} L${X(P.R2)},${Y - 22} L${X(P.R2)},${Y}`); tags[1].setAttribute("x", (X(P.D1) + X(P.R2)) / 2); tags[1].setAttribute("y", Y - 52); tags[1].textContent = "A: 2 min";
+      big.textContent = "Both riders picked up. Longest pickup 4 min.";
+    }
+    function loop() {
+      reset(); tags[1].setAttribute("y", Y - 52);
+      phase.textContent = "Nearest driver, the moment each request arrives"; note.textContent = "rider 1 asks first";
+      at(500, () => { r1.setAttribute("opacity", 1); l1.setAttribute("opacity", 1); });
+      at(1100, () => drive(0, dA, P.D1, P.R1, false, 520, "A: 1 min"));
+      at(2300, () => { r2.setAttribute("opacity", 1); l2.setAttribute("opacity", 1); note.textContent = "then rider 2: only driver B is left"; });
+      at(3000, () => drive(1, dB, P.D2, P.R2, true, 1500, "B: 7 min"));
+      at(4700, () => { xmark.setAttribute("opacity", 1); r2.setAttribute("opacity", 0.35); big.textContent = "Rider 2 sees a 7-minute quote and cancels. 1 of 2 served."; });
+      at(7400, () => {
+        reset(); tags[1].setAttribute("y", Y - 52);
+        phase.textContent = "Batch: wait 30 s, then match everyone together"; note.textContent = "both requests, solved as one assignment";
+        [r1, r2, l1, l2].forEach((n) => n.setAttribute("opacity", 1));
+      });
+      at(8400, () => { drive(0, dB, P.D2, P.R1, false, 1100, "B: 4 min"); drive(1, dA, P.D1, P.R2, false, 700, "A: 2 min"); });
+      at(9800, () => { big.textContent = "Both riders picked up. Longest pickup 4 min."; });
+      at(12600, loop);
+    }
+    function start() { if (running) return; running = true; loop(); }
+    function stop() { running = false; timers.forEach(clearTimeout); timers = []; cancelAnimationFrame(raf); }
+    if (reduce) batchFinal(); else { batchFinal(); whenVisible(wrap, start, stop); }
+  }
+
+  // Watermarks: three partitions deliver ticks; the batch at 30 s fires when the slowest one passes 30 s.
+  function animWM() {
+    const wrap = document.getElementById("anim-wm");
+    const W = 600, H = 200, x0 = 110, x1 = 440, lanesY = [52, 98, 144];
+    const svg = el("svg", { viewBox: `0 0 ${W} ${H}` }, wrap);
+    const DELAY = [0.0, 0.1, 0.45], TRAVEL = [0.8, 0.95, 1.7], STEP = 0.9, TICKS = [5, 10, 15, 20, 25, 30, 35];
+    lanesY.forEach((y, i) => {
+      el("line", { class: "lane", x1: x0, x2: x1, y1: y, y2: y }, svg);
+      const t = el("text", { class: "lanelab", x: 10, y: y + 4 }, svg); t.textContent = `partition ${i}` + (i === 2 ? " (slow)" : "");
+    });
+    const box = el("rect", { class: "mbox", x: 455, y: 22, width: 135, height: 150, rx: 5 }, svg);
+    const mt = el("text", { class: "lanelab", x: 467, y: 42 }, svg); mt.textContent = "matcher";
+    const seen = lanesY.map((y) => el("text", { class: "lanelab", x: 467, y: y + 4 }, svg));
+    const wm = el("text", { class: "wm", x: 467, y: 166 }, svg);
+    const fired = el("text", { class: "fired", x: x0, y: 186 }, svg);
+    const chips = lanesY.map((y, i) => TICKS.map((v) => {
+      const g = el("g", { opacity: 0 }, svg);
+      el("rect", { class: "chip" + (i === 2 ? " slow" : ""), x: -17, y: y - 9, width: 34, height: 18, rx: 4 }, g);
+      const t = el("text", { class: "chiptxt", x: 0, y: y + 4, "text-anchor": "middle" }, g); t.textContent = v + " s";
+      return g;
+    }));
+    const END = 9.0;
+    function frame(T) {
+      const latest = [0, 0, 0];
+      lanesY.forEach((y, i) => TICKS.forEach((v, k) => {
+        const emit = k * STEP + DELAY[i], arrive = emit + TRAVEL[i], g = chips[i][k];
+        if (T < emit || T >= arrive) { g.setAttribute("opacity", 0); if (T >= arrive) latest[i] = v; return; }
+        const x = x0 + (x1 - x0) * (T - emit) / TRAVEL[i];
+        g.setAttribute("opacity", 1); g.setAttribute("transform", `translate(${x},0)`);
+      }));
+      lanesY.forEach((y, i) => (seen[i].textContent = latest[i] ? `has ${latest[i]} s` : "—"));
+      const w = Math.min(...latest);
+      wm.textContent = `watermark ${w} s`;
+      const fire = w >= 30;
+      box.setAttribute("class", "mbox" + (fire ? " fire" : ""));
+      if (fire) fired.textContent = "All partitions past 30 s: the 30 s batch is solved.";
+      else if (Math.max(...latest) >= 30) fired.textContent = "Two partitions are at 30 s. Waiting for partition 2…";
+      else fired.textContent = "";
+    }
+    let raf = 0, t0 = 0, running = false;
+    const tick = (now) => { if (!running) return; let T = (now - t0) / 1000; if (T > END) { t0 = now; T = 0; } frame(T); raf = requestAnimationFrame(tick); };
+    function start() { if (running) return; running = true; t0 = performance.now(); raf = requestAnimationFrame(tick); }
+    function stop() { running = false; cancelAnimationFrame(raf); }
+    if (reduce) frame(7.0); else { frame(7.0); whenVisible(wrap, start, stop); }
+  }
+
+  function drawAll() { drawEffects(); drawScarcity(); }
+  drawAll();
+  animMatch();
+  animWM();
+  // redraw with the other theme's colours when the viewer switches
+  const mq = window.matchMedia("(prefers-color-scheme: dark)");
+  if (mq.addEventListener) mq.addEventListener("change", drawAll);
+  new MutationObserver(drawAll).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+})();
+</script>
+</body>
+</html>

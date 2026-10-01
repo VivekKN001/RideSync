@@ -685,3 +685,35 @@ quote.
 **Framing:** "Tested on 27 days across a year, not one: no result flips, the effects that depend on scarcity
 (batching, surge with responsive drivers) vary 2-5× between ordinary Wednesdays, and the effects that fix a
 systematic error (honest ETAs, repositioning) are steady."
+
+# M10: repositioning, driver supply and late cancels, live over Kafka
+
+The last offline-only behaviours now run live: the matcher service plans repositioning (the same `plan_round` as
+the offline engine, on its own view of the fleet rebuilt from events) and sends moves on `reposition-moves`; the
+simulator keeps what drivers and riders decide themselves (drift, logging on and off, chasing surge, giving up on
+a late driver). Lockstep runs (zero latency) are bit-identical to offline with each of these on and with all of
+them at once, with 1 and 3 partitions and reordered delivery (`tests/test_m10.py`).
+
+Over a real Kafka broker (`experiments/m3_live_vs_offline.py --m10`; Wednesday 15 July 2026 evening, 500 drivers,
+optimal every 30 s, travel times with M7's noise, the matcher's plan on forecast demand every 5 min, riders who
+give up on late drivers; 2 seeds; full table `results/m10_live_straight_report.md`):
+
+| mode | cancel % | Δ cancel pp | Δ wait s | Δ trips/h | late cancel % | moves / driver-h |
+|---|---|---|---|---|---|---|
+| offline | 3.40 | | | | 1.08 | 0.42 |
+| live 10× | 3.42 | +0.02 | +1.9 | −0.2 | 1.03 | 0.41 |
+| live 30× | 3.63 | +0.23 | +1.9 | −2.6 | 1.22 | 0.41 |
+
+**At 10× live is offline plus a couple of seconds.** All 2,723 moves the matcher sent were started by the
+simulator, none rejected: the matcher waits for a batch's answers and for the matched drivers' new statuses before
+it plans, so it never sends an idle-looking driver who has just been matched. Offers land 0.23 simulated seconds
+after their batch (p99 0.42 s); a batch is solved 6 ms after its watermark (p50).
+
+**At 30× the same wall-clock delays cost three times as much simulated time.** The p99 offer delay reaches 19
+simulated seconds, past the 15 s offer timeout, so 1.1% of offers expire and cancellations rise 0.23 pp. At real
+speed (1×) the same delays would be a tenth of the 10× ones.
+
+The Kafka run also found a bug the in-memory tests could not: a matcher started on empty topics, before any run,
+crashed on its first step (`self.repo` was only set by a `run_start`). Fixed, with a test that starts a matcher on
+empty topics.
+
