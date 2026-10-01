@@ -173,3 +173,10 @@ def test_simulator_rejects_moves_for_busy_drivers_and_stale_moves():
 def test_repositioning_interval_must_be_a_multiple_of_the_batch_interval():
     with pytest.raises(ValueError, match="multiple"):
         LiveSimulation(BASE.with_(**{**PLANNED, "reposition.interval_s": 100.0}), InMemoryBus())
+
+
+def test_matcher_waits_for_a_run_without_crashing():
+    m = Matcher(InMemoryBus())  # empty topics: nothing has started yet (the service at startup)
+    m.step()
+    m.step()
+    assert m.run is None and not m.catching_up

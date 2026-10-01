@@ -105,6 +105,7 @@ class Matcher:
         self._travel_cache: Dict[str, TravelTimeModel] = {}
         self._repo_cache: Dict[str, object] = {}  # zones, zone targets and demand models, by path
         self.catching_up = True
+        self.repo: Optional[RepositionConfig] = None  # the current run's planned repositioning, if any
         self.run: Optional[str] = None
         self.started_ms = -1
         self.messages = 0
