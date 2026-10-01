@@ -438,6 +438,19 @@ riders (fairness). The optimal solve pads the matrix with one "stay unmatched" c
 
 ## Run
 
+**Restore the data instead of rebuilding it.** `data/` isn't in git. A snapshot of it (models, the 31 reduced months,
+demand slices, calibrations, the OSRM road network) is attached to the
+[`data-2026-10-01` release](https://github.com/VivekKN001/RideSync/releases/tag/data-2026-10-01), in three zips:
+`core` (304 MB, needed for every experiment and the demo), `osm` (339 MB, road-time runs) and `raw` (505 MB, only to
+reproduce March 2024). From the repo root:
+
+```
+gh release download data-2026-10-01 --pattern "ridesync-data-*.zip"
+python -c "import zipfile, glob; [zipfile.ZipFile(z).extractall('.') for z in glob.glob('ridesync-data-*.zip')]"
+```
+
+`.env` (local passwords) isn't in the snapshot: copy `.env.example` to `.env` and set your own.
+
 ```
 python -m venv .venv && .venv\Scripts\activate
 pip install -e ".[dev,live,web]" pandas pyarrow geopandas requests
