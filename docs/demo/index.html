@@ -9,7 +9,7 @@
 <style>
   :root {
     --ground: #15181c; --surface: rgba(24, 28, 33, 0.86); --ink: #eef1f3; --ink-2: #b4bcc3; --ink-3: #87919a;
-    --rule: rgba(255, 255, 255, 0.10); --idle: #7d8791; --enroute: #ffb830; --ontrip: #6d95ec; --waiting: #ff7aa8;
+    --rule: rgba(255, 255, 255, 0.10); --idle: #7d8791; --enroute: #ffb830; --ontrip: #6d95ec; --repo: #b48cff; --waiting: #ff7aa8;
     --late: #ff4d4d; --match: #5fe0b4; --cancel: #ff4d4d; --pressure: #ff7a3d;
     --display: "Barlow Condensed", "Arial Narrow", sans-serif; --body: "Public Sans", "Segoe UI", system-ui, sans-serif;
   }
@@ -83,7 +83,7 @@
   <div class="clock" id="clock">--:--<small>simulated</small></div>
   <div class="stats">
     <div class="stat"><b id="waiting">0</b><span>Waiting</span></div>
-    <div class="stat"><b id="drivers">0 / 0</b><span>Free / drivers</span></div>
+    <div class="stat"><b id="drivers">0 / 0</b><span>Free / online</span></div>
     <div class="stat"><b id="completed">0</b><span>Trips done</span></div>
     <div class="stat"><b id="cancelled">0</b><span>Cancelled</span></div>
   </div>
@@ -92,6 +92,7 @@
     <button class="chip" data-layer="enroute" title="Line runs to the rider"><i style="background:var(--enroute)"></i>To pickup</button>
     <button class="chip" data-layer="ontrip" title="Short tail shows the direction"><i style="background:var(--ontrip)"></i>With passenger</button>
     <button class="chip" data-layer="idle"><i style="background:var(--idle)"></i>Free</button>
+    <button class="chip" data-layer="repo" title="Free, sent by the platform toward expected demand (or chasing a surge); line runs to where it is going"><i style="background:var(--repo)"></i>Repositioning</button>
     <button class="chip" data-layer="events" title="Green ripple: matched. Red cross: cancelled"><i style="background:var(--match)"></i>Match / cancel</button>
     <button class="chip" data-layer="zones" title="Zones with more requests than free drivers in the last closed minute (Flink)"><i class="hot"></i>Short of drivers</button>
   </div>
@@ -112,7 +113,7 @@
 <script>
 (function () {
   const C = {
-    idle: [125, 135, 145], enroute: [255, 184, 48], ontrip: [109, 149, 236], waiting: [255, 122, 168],
+    idle: [125, 135, 145], enroute: [255, 184, 48], ontrip: [109, 149, 236], repo: [180, 140, 255], waiting: [255, 122, 168],
     late: [255, 77, 77], land: [44, 50, 58, 120], match: [95, 224, 180], cancel: [255, 77, 77], pressure: [255, 122, 61],
   };
   const PATIENCE_S = 300;   // median rider patience (SimConfig): the wait colour is fully red here
@@ -129,10 +130,11 @@
   let tails = new Map();          // driver id -> {state, path: [[lon, lat]], times: [s]}
   const seenMatches = new Set(), ripples = [];
   let firstFrame = true;
-  let D = { idle: [], ontrip: [], enroute: [], trips: [], waiting: [], cancels: [] };  // per-frame layer data
+  let D = { idle: [], ontrip: [], enroute: [], repo: [], trips: [], waiting: [], cancels: [] };  // per-frame layer data
+  const S = { idle: 0, enroute: 1, ontrip: 2, repo: 3, offline: 4 };  // driver state codes (ridesync.web.app)
 
   // Layer toggles, remembered per browser.
-  const shown = { waiting: true, enroute: true, ontrip: true, idle: true, events: true, zones: true };
+  const shown = { waiting: true, enroute: true, ontrip: true, idle: true, repo: true, events: true, zones: true };
   try { Object.assign(shown, JSON.parse(localStorage.getItem("ridesync.layers") || "{}")); } catch (e) {}
   document.querySelectorAll(".chip").forEach((b) => {
     const key = b.dataset.layer;
@@ -165,7 +167,8 @@
     const trips = [];
     if (shown.ontrip) tails.forEach((v) => { if (v.state === 2 && v.path.length > 1) trips.push(v); });
     D = {
-      idle: pick(shown.idle, 0), enroute: pick(shown.enroute, 1), ontrip: pick(shown.ontrip, 2), trips,
+      idle: pick(shown.idle, S.idle), enroute: pick(shown.enroute, S.enroute), ontrip: pick(shown.ontrip, S.ontrip),
+      repo: pick(shown.repo, S.repo), trips,
       waiting: shown.waiting ? f.waiting : [], cancels: shown.events ? f.cancels : [],
     };
   }
@@ -203,6 +206,15 @@
         id: "to-pickup", data: D.enroute.filter((d) => d[4] !== null),
         getSourcePosition: (d) => [d[2], d[1]], getTargetPosition: (d) => [d[5], d[4]],
         getColor: [...C.enroute, 170], getWidth: 1.4, widthUnits: "pixels",
+      }),
+      new deck.LineLayer({
+        id: "to-target", data: D.repo.filter((d) => d[4] !== null),
+        getSourcePosition: (d) => [d[2], d[1]], getTargetPosition: (d) => [d[5], d[4]],
+        getColor: [...C.repo, 90], getWidth: 1, widthUnits: "pixels",
+      }),
+      new deck.ScatterplotLayer({
+        id: "repo", data: D.repo, getPosition: (d) => [d[2], d[1]],
+        radiusUnits: "pixels", getRadius: 2.4, getFillColor: [...C.repo, 210],
       }),
       new deck.ScatterplotLayer({
         id: "enroute", data: D.enroute, getPosition: (d) => [d[2], d[1]],
@@ -323,9 +335,10 @@
       const day = frame.start ? new Date(frame.start.slice(0, 10) + "T12:00:00").toLocaleDateString("en-US",
         { weekday: "short", day: "numeric", month: "short", year: "numeric" }) : "simulated";
       $("clock").innerHTML = `${clock(frame.t, frame.start)}<small>${day}</small>`;
-      const free = frame.drivers.filter((d) => d[3] === 0).length;
+      const free = frame.drivers.filter((d) => d[3] === S.idle || d[3] === S.repo).length;
+      const online = frame.drivers.filter((d) => d[3] !== S.offline).length;
       $("waiting").textContent = fmt.format(frame.waiting.length);
-      $("drivers").textContent = `${fmt.format(free)} / ${fmt.format(frame.drivers.length)}`;
+      $("drivers").textContent = `${fmt.format(free)} / ${fmt.format(online)}`;
       $("completed").textContent = fmt.format(frame.counts.completed);
       $("cancelled").textContent = fmt.format(frame.counts.cancelled);
   }

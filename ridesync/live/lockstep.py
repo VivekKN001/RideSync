@@ -36,7 +36,7 @@ def run_lockstep(
     live = replace(live or LiveConfig(ping_s=0.0), speed=0.0, tick_s=tick_s or cfg.dispatch.interval_s)
     bus = bus if bus is not None else InMemoryBus(partitions)
     sim = LiveSimulation(cfg, bus, live, travel)
-    matcher = Matcher(bus, travel=sim.travel)
+    matcher = Matcher(bus, travel=sim.belief)  # what the matcher assumes, as offline
 
     def settle() -> None:
         while matcher.step() + sim.poll(0.0):

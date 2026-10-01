@@ -71,11 +71,3 @@ def test_response_brings_drivers_and_lowers_prices():
     assert resp["drivers_online_mean"] > fixed["drivers_online_mean"]
     assert resp["mean_multiplier_paid"] < fixed["mean_multiplier_paid"]
     assert resp["completed"] > fixed["completed"]
-
-
-def test_live_mode_refuses_it():
-    from ridesync.live.bus import InMemoryBus
-    from ridesync.live.world import LiveSimulation
-
-    with pytest.raises(ValueError, match="offline only"):
-        LiveSimulation(BASE.with_(**BOTH), InMemoryBus())

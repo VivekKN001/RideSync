@@ -95,6 +95,33 @@ series("Offer outcomes (per 10 s)",
        f"countIf(outcome = 'declined') AS `Declined by driver`, countIf(outcome = 'quote_cancelled') AS "
        f"`Rider refused ETA`, countIf(outcome = 'rejected') AS `Rejected as stale` "
        f"FROM offer_responses WHERE {RUN} GROUP BY time ORDER BY time", stack=True, draw="bars")
+# --------------------------------------------------------------- fleet (M10)
+series("Drivers by state (M10)",
+       "SELECT time, sum(d_idle) OVER w AS Free, sum(d_repo) OVER w AS Repositioning, sum(d_enroute) OVER w AS "
+       "`To pickup`, sum(d_trip) OVER w AS `With passenger`, sum(d_off) OVER w AS Offline FROM ("
+       "SELECT toStartOfInterval(ts, INTERVAL 10 SECOND) AS time, "
+       "countIf(state = 'idle') - countIf(prev = 'idle') AS d_idle, "
+       "countIf(state = 'repositioning') - countIf(prev = 'repositioning') AS d_repo, "
+       "countIf(state = 'en_route') - countIf(prev = 'en_route') AS d_enroute, "
+       "countIf(state = 'on_trip') - countIf(prev = 'on_trip') AS d_trip, "
+       "countIf(state = 'offline') - countIf(prev = 'offline') AS d_off FROM ("
+       "SELECT ts, state, lagInFrame(state, 1, '') OVER (PARTITION BY driver ORDER BY t, seq "
+       "ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS prev "
+       f"FROM driver_status WHERE {RUN}) GROUP BY time) "
+       "WINDOW w AS (ORDER BY time ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) ORDER BY time",
+       stack=True, desc="From every driver status: each change of state moves one driver between the bands. "
+                        "Offline = reserve drivers not working (surge with driver response, M6b).")
+series("Repositioning moves and late-driver cancels (per 10 s, M10)",
+       f"SELECT time, sum(started) AS `Moves started`, sum(rejected) AS `Moves rejected`, sum(late) AS "
+       f"`Riders gave up on a late driver` FROM ("
+       f"SELECT toStartOfInterval(ts, INTERVAL 10 SECOND) AS time, countIf(outcome = 'started') AS started, "
+       f"countIf(outcome = 'rejected') AS rejected, 0 AS late FROM reposition_moves "
+       f"WHERE {RUN} AND type = 'move_response' GROUP BY time UNION ALL "
+       f"SELECT toStartOfInterval(ts, INTERVAL 10 SECOND) AS time, 0, 0, count() FROM rider_events "
+       f"WHERE {RUN} AND type = 'cancelled' AND reason = 'late_driver' GROUP BY time) GROUP BY time ORDER BY time",
+       draw="bars", desc="Moves: the matcher's plan every 5 simulated minutes; the simulator starts a move only if "
+                         "the driver is still idle. Late: the quote plus the rider's tolerance passed without a pickup.")
+
 series("Matcher: solve time and tick-to-batch latency",
        f"SELECT ts AS time, solve_ms AS `Solve (ms)`, tick_lag_ms AS `Tick to solved (ms)` "
        f"FROM dispatch_batches WHERE {RUN} ORDER BY ts", unit="ms")

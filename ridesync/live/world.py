@@ -14,6 +14,11 @@ how long offers take to come back.
 With ``speed <= 0`` the simulator doesn't pace itself. A ``lockstep`` callback
 runs the matcher to completion at every tick instead (``ridesync.live.lockstep``),
 which reproduces the offline simulation exactly.
+
+M10: what drivers and riders decide for themselves stays here, as offline: drifting to usually-busy
+zones, logging on and off and chasing surge (M6b), and riders giving up on a late driver. The platform's
+repositioning plan (``reposition.policy = "planned"``) comes from the matcher on ``reposition-moves``; the
+simulator starts a move only if the driver is still idle, and answers each one.
 """
 from __future__ import annotations
 
@@ -29,11 +34,11 @@ from ..sim.config import SimConfig
 from ..sim.engine import DISPATCH, REPOSITION, REQUEST, Driver, DriverState, Rider, RiderState, Simulation
 from .bus import Bus
 from .schema import (
-    CONTROL_TYPES, DISPATCH_BATCHES, DISPATCH_OFFERS, DRIVER_EVENTS, OFFER_RESPONSES, RIDER_EVENTS, VERSION,
-    WORLD_TOPICS, ZONE_PRICES, run_config,
+    CONTROL_TYPES, DISPATCH_BATCHES, DISPATCH_OFFERS, DRIVER_EVENTS, OFFER_RESPONSES, REPOSITION_MOVES, RIDER_EVENTS,
+    VERSION, WORLD_TOPICS, ZONE_PRICES, run_config,
 )
 
-PING = REPOSITION + 1  # after dispatch at equal timestamps (repositioning is offline only)
+PING = REPOSITION + 1  # after dispatch and drift repositioning at equal timestamps
 
 
 @dataclass(frozen=True)
@@ -57,12 +62,11 @@ class LiveSimulation(Simulation):
                  travel: Optional[TravelTimeModel] = None, run_id: Optional[str] = None):
         if cfg.dispatch.interval_s <= 0:
             raise ValueError("live mode dispatches in batches: set dispatch.interval_s > 0")
-        if cfg.riders.enroute_cancel:
-            raise ValueError("riders.enroute_cancel is offline only: the live matcher doesn't model it yet")
-        if cfg.reposition.policy != "none":
-            raise ValueError("repositioning is offline only: the live matcher doesn't track repositioning drivers")
-        if cfg.supply.enabled:
-            raise ValueError("driver supply response is offline only (M10 brings it live)")
+        rc = cfg.reposition
+        ratio = rc.interval_s / cfg.dispatch.interval_s
+        if rc.policy == "planned" and abs(ratio - round(ratio)) > 1e-9:
+            raise ValueError("live repositioning plans right after a batch: reposition.interval_s must be a "
+                             "multiple of dispatch.interval_s")
         super().__init__(cfg, travel)
         self.live = live
         self.bus = bus
@@ -71,7 +75,9 @@ class LiveSimulation(Simulation):
             raise ValueError(f"unknown price source {live.price_source!r}; use 'local' or 'service'")
         self.price_service = self.pricing_on and live.price_source == "service"
         # Assigned before run_start is sent, so every offer for this run is seen.
-        inbox = [DISPATCH_OFFERS, DISPATCH_BATCHES] + ([ZONE_PRICES] if self.price_service else [])
+        self.planned = self.repo_on and cfg.reposition.policy == "planned"  # the matcher plans the moves
+        inbox = ([DISPATCH_OFFERS, DISPATCH_BATCHES] + ([ZONE_PRICES] if self.price_service else [])
+                 + ([REPOSITION_MOVES] if self.planned else []))
         self.inbox = bus.consumer(inbox, from_beginning=False)
         self.started_ms = int(time.time() * 1000)
         self.run_id = run_id or f"{self.started_ms}-seed{cfg.seed}"
@@ -81,6 +87,8 @@ class LiveSimulation(Simulation):
         self.offer_transit_ms: List[float] = []  # wall time from the matcher sending an offer to it arriving here
         self.tick_to_batch_ms: List[float] = []  # wall time from sending a tick to the matcher solving that batch
         self.outcomes: Counter = Counter()    # accepted / declined / quote_cancelled / rejected:<reason>
+        self.move_outcomes: Counter = Counter()  # started / rejected:<reason> (M10 repositioning moves)
+        self._seen_moves: set = set()
         self.max_lag_s = 0.0                  # worst simulated-time lag behind the wall clock
         self._seen_offers: set = set()
         self._tick_no = 0
@@ -146,17 +154,21 @@ class LiveSimulation(Simulation):
 
     def _publish_driver(self, d: Driver) -> None:
         self._status_seq[d.id] += 1
-        self._send(DRIVER_EVENTS, d.id, {
-            "type": "status", "driver": d.id, "seq": self._status_seq[d.id], "state": d.state.value,
-            "pos": d.pos.tolist(), "free_at": d.free_at, "has_next": d.has_next, "rider": d.rider_id,
-        })
+        msg = {"type": "status", "driver": d.id, "seq": self._status_seq[d.id], "state": d.state.value,
+               "pos": d.pos.tolist(), "free_at": d.free_at, "has_next": d.has_next, "rider": d.rider_id,
+               "since": d.state_since}
+        if d.state is DriverState.REPOSITIONING:  # the leg, so the matcher can place it on the way
+            msg.update(move_zone=d.move_zone, path=d.leg.route.path.tolist(), cum_s=d.leg.route.cum_s.tolist(),
+                       t0=d.leg.t0)
+        self._send(DRIVER_EVENTS, d.id, msg)
 
     # ------------------------------------------------------------------ run
     def run(self) -> "LiveSimulation":
         self._wall0 = time.monotonic()
         self._wall0_ms = time.time() * 1000
         extra = {"start": self.start.isoformat() if self.start else None, "sample_frac": self.sample_frac,
-                 "pricing": asdict(self.cfg.pricing), "price_source": self.live.price_source}
+                 "pricing": asdict(self.cfg.pricing), "price_source": self.live.price_source,
+                 "reposition": asdict(self.cfg.reposition), "duration_s": self.cfg.demand.duration_s}
         self._broadcast("run_start", started_ms=self.started_ms,
                         config=run_config(self.cfg.dispatch, self.cfg.belief or self.cfg.travel,
                                           self.live.offer_timeout_s, extra))
@@ -166,6 +178,8 @@ class LiveSimulation(Simulation):
             self._schedule(r.spec.request_t, REQUEST, r.spec.id)
         self._schedule_tick()
         self._schedule_pricing()
+        if self.repo_on and not self.planned:  # drift: the drivers' own decision, made here as offline
+            self._schedule(self.cfg.reposition.interval_s, REPOSITION)
         if self.live.ping_s > 0:
             self._schedule(self.live.ping_s, PING)
         self.producer.flush()
@@ -239,6 +253,13 @@ class LiveSimulation(Simulation):
             elif v["type"] == "prices" and self.price_service:
                 self.prices = {int(z): float(m) for z, m in v["prices"].items()}
                 self.price_log.append((self.now, self.prices, v.get("demand"), v.get("supply")))
+                if self.supply_on:  # drivers respond to the service's prices as they would to local ones
+                    self._supply_response()
+            elif v["type"] == "move" and self.planned:
+                if self.live.speed > 0:
+                    nxt = self._events[0][0] if self._events else float("inf")
+                    self.now = max(self.now, min(self._clock(), nxt))
+                self.apply_move(v)
             elif v["type"] == "batch":
                 self.stats.record_batch(v["riders"], v["drivers"], v["solve_ms"], v["cost"], v["shadow_cost"])
                 if v.get("tick_lag_ms") is not None:
@@ -258,6 +279,8 @@ class LiveSimulation(Simulation):
         reason = None
         if r.state is not RiderState.WAITING:
             reason = "rider_gone"
+        elif d.state is DriverState.OFFLINE:
+            reason = "driver_offline"
         elif d.state is DriverState.EN_ROUTE or d.has_next:
             reason = "driver_busy"
         elif self.now - offer["batch_t"] > self.live.offer_timeout_s:
@@ -267,7 +290,34 @@ class LiveSimulation(Simulation):
         if reason is None:
             msg["outcome"] = outcome = self._offer(r, d, offer["eta_s"])
             self.outcomes[outcome] += 1
+            if outcome == "accepted":  # the driver status this produced, so the matcher can wait for it
+                msg["driver_seq"] = self._status_seq[d.id]
         else:
             msg.update(outcome="rejected", reason=reason)
             self.outcomes[f"rejected:{reason}"] += 1
         self._send(OFFER_RESPONSES, r.spec.id, msg)
+
+    def apply_move(self, move: dict) -> None:
+        """A repositioning move from the matcher: start it if the driver is still idle, and answer."""
+        mid = move["move_id"]
+        if mid in self._seen_moves:  # at-least-once delivery: a redelivered move is a no-op
+            return
+        self._seen_moves.add(mid)
+        d, zone = self.drivers[move["driver"]], int(move["zone"])
+        reason = None
+        if d.state is not DriverState.IDLE:
+            reason = "driver_busy"
+        elif self.now - move["plan_t"] > self.live.offer_timeout_s:
+            reason = "expired"
+        elif zone not in self.repo_targets:
+            reason = "no_route"
+        else:
+            self._start_move(d, zone)
+            if d.state is not DriverState.REPOSITIONING:  # already there: nothing to drive
+                reason = "no_route"
+        self.move_outcomes["started" if reason is None else f"rejected:{reason}"] += 1
+        msg = {"type": "move_response", "move_id": mid, "driver": d.id, "zone": zone,
+               "outcome": "started" if reason is None else "rejected"}
+        if reason is not None:
+            msg["reason"] = reason
+        self._send(REPOSITION_MOVES, d.id, msg)

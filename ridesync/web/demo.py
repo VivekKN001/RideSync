@@ -77,7 +77,7 @@ def run_once(cfg: SimConfig, view, speed: float, stop: threading.Event, zones: O
     """One run into ``view``. ``speed`` <= 0 runs unpaced. Raises Stopped when ``stop`` is set."""
     bus = FeedBus(MapFeed(view, zones))
     sim = LiveSimulation(cfg, bus, LiveConfig(speed=0.0, tick_s=1.0, ping_s=PING_S))
-    matcher = Matcher(bus, travel=sim.travel)
+    matcher = Matcher(bus, travel=sim.belief)  # what the matcher assumes, as offline
     wall0 = time.monotonic()
 
     def settle() -> None:

@@ -150,3 +150,12 @@ def test_entity_keys_ignore_pings_and_control():
     assert entity_key(msg("tick", 1)) is None
     assert entity_key(msg("status", 1, driver=4, state="idle", pos=WEST)) == "r|d|4"
     assert entity_key(msg("cancelled", 1, rider=9, reason="no_match")) == "r|r|9"
+
+
+def test_repositioning_drivers_are_free_where_they_are_heading_and_offline_ones_are_not():
+    st, ev = enrich(None, msg("status", 0, driver=3, state="idle", pos=WEST), SQUARES)
+    assert [(e["zone"], e["delta"]) for e in ev] == [(1, 1)]
+    st, ev = enrich(st, msg("status", 10, driver=3, state="repositioning", pos=EAST), SQUARES)  # heads east
+    assert [(e["zone"], e["delta"]) for e in ev] == [(1, -1), (2, 1)]
+    st, ev = enrich(st, msg("status", 20, driver=3, state="offline", pos=EAST), SQUARES)
+    assert [(e["zone"], e["delta"]) for e in ev] == [(2, -1)]

@@ -19,6 +19,12 @@ On start the matcher reads every topic from the beginning ("catch-up") without
 dispatching, which restores the current run's state including offers still in
 flight. It follows whichever run started most recently and takes that run's
 dispatch and travel config from its ``run_start`` message.
+
+Repositioning (M10, ``reposition.policy = "planned"``): every ``reposition.interval_s`` of event time, once
+the batch at that boundary has been answered, the matcher plans moves for idle drivers with the offline
+engine's own ``plan_round`` and sends them on ``reposition-moves``. A repositioning driver's status carries
+its leg, so the matcher knows where it is on the way. Logging on and off and riders cancelling on a late
+driver need nothing here: the statuses and cancellations say it all.
 """
 from __future__ import annotations
 
@@ -34,13 +40,14 @@ from typing import Dict, Optional, Set
 import numpy as np
 
 from ..dispatch import DispatchStats, DriverState, build_batch, solve_batch
-from ..geo import TravelTimeModel
+from ..geo import Route, TravelTimeModel
 from ..matching import get_strategy
 from ..routing import make_travel_model
+from ..sim.config import RepositionConfig
 from .bus import Bus, Message
 from .schema import (
-    CONTROL_TYPES, DISPATCH_BATCHES, DISPATCH_OFFERS, DRIVER_EVENTS, OFFER_RESPONSES, RIDER_EVENTS, VERSION,
-    WORLD_TOPICS, dispatch_from_dict, travel_from_dict,
+    CONTROL_TYPES, DISPATCH_BATCHES, DISPATCH_OFFERS, DRIVER_EVENTS, OFFER_RESPONSES, REPOSITION_MOVES, RIDER_EVENTS,
+    VERSION, WORLD_TOPICS, dispatch_from_dict, travel_from_dict,
 )
 
 
@@ -51,6 +58,23 @@ class DriverRecord:
     pos: np.ndarray
     free_at: float
     has_next: bool
+    state_since: float = 0.0
+    seq: int = 0
+    move_zone: Optional[int] = None  # repositioning: where it is heading, and the leg it drives
+    route: Optional[Route] = None
+    t0: float = 0.0
+
+    def position_at(self, t: float) -> np.ndarray:
+        return self.route.position(t - self.t0) if self.route is not None else self.pos
+
+
+def _driver_record(v: dict) -> DriverRecord:
+    d = DriverRecord(v["driver"], DriverState(v["state"]), np.array(v["pos"]), v["free_at"], v["has_next"],
+                     v.get("since", 0.0), v.get("seq", 0))
+    if "path" in v:
+        cum = np.array(v["cum_s"])
+        d.move_zone, d.route, d.t0 = v["move_zone"], Route(float(cum[-1]), np.array(v["path"]), cum), v["t0"]
+    return d
 
 
 @dataclass
@@ -73,11 +97,13 @@ class Matcher:
         self.bus = bus
         self.producer = bus.producer()
         self.consumer = bus.consumer(
-            [RIDER_EVENTS, DRIVER_EVENTS, OFFER_RESPONSES, DISPATCH_OFFERS], from_beginning=True, skip_types=["ping"]
+            [RIDER_EVENTS, DRIVER_EVENTS, OFFER_RESPONSES, DISPATCH_OFFERS, REPOSITION_MOVES], from_beginning=True,
+            skip_types=["ping"]
         )
         self.partitions = [(t, p) for t in WORLD_TOPICS for p in range(bus.partitions(t))]
         self._travel_override = travel
         self._travel_cache: Dict[str, TravelTimeModel] = {}
+        self._repo_cache: Dict[str, object] = {}  # zones, zone targets and demand models, by path
         self.catching_up = True
         self.run: Optional[str] = None
         self.started_ms = -1
@@ -114,6 +140,41 @@ class Matcher:
         self.skipped = 0
         self.expired = 0
         self.stats = DispatchStats()
+        self.moves_sent = 0
+        self.awaiting: Dict[int, int] = {}  # driver -> status seq an accepted offer produced, not yet read
+        self.move_outcomes: Dict[str, int] = {}
+        self._start_reposition(cfg)
+
+    def _cached(self, key: str, load):
+        if key not in self._repo_cache:
+            self._repo_cache[key] = load()
+        return self._repo_cache[key]
+
+    def _start_reposition(self, cfg: dict) -> None:
+        """The planned repositioning of this run, if any: the same inputs the offline engine plans with."""
+        rc = RepositionConfig(**cfg["reposition"]) if cfg.get("reposition") else None
+        self.repo = rc if rc is not None and rc.policy == "planned" else None
+        if self.repo is None:
+            return
+        from ..pricing import DemandEstimator
+        from ..reposition import zone_targets
+        from ..stream.zones import ZoneIndex
+
+        rc = self.repo
+        self.zones = self._cached(f"zones:{rc.zones_path}", lambda: ZoneIndex.load(rc.zones_path))
+        self.targets = self._cached(f"targets:{rc.zones_path}:{rc.points_path}",
+                                    lambda: zone_targets(self.zones, rc.points_path))
+        fc = None
+        if rc.demand == "forecast":
+            from ..ml.demand import load_or_none
+
+            fc = self._cached(f"forecast:{rc.forecast_path}", lambda: load_or_none(rc.forecast_path))
+        start = datetime.fromisoformat(cfg["start"]) if cfg.get("start") else None
+        self.estimator = DemandEstimator(rc, start, cfg.get("sample_frac", 1.0), fc)
+        self.opens_from = "quoted" if (cfg.get("pricing") or {}).get("enabled") else "requested"
+        self.duration_s = cfg.get("duration_s", math.inf)
+        self.next_j = 1           # the next repositioning round, at next_j * interval_s
+        self.repo_due: Optional[float] = None  # a round whose time has come, waiting for its batch's answers
 
     def watermark(self) -> float:
         if self.run is None or len(self.marks) < len(self.partitions):
@@ -142,6 +203,10 @@ class Matcher:
                 self.replay_marks[(m.topic, m.partition)] = v["t"]
         elif m.topic == RIDER_EVENTS:
             rid = v["rider"]
+            # Every first app open is demand for repositioning, priced out or not (as offline).
+            if self.repo is not None and typ == self.opens_from and v.get("attempt", 0) == 0:
+                o = v["origin"]
+                self.estimator.add_open(self.zones.zone_of(float(o[0]), float(o[1])), v["t"])
             if typ == "requested":
                 self.waiting[rid] = WaitingRider(rid, np.array(v["origin"]), v["request_t"])
             elif typ in ("matched", "cancelled"):
@@ -149,19 +214,25 @@ class Matcher:
                 self.declined.pop(rid, None)
         elif m.topic == DRIVER_EVENTS:
             if typ == "status":
-                did = v["driver"]
-                self.drivers[did] = DriverRecord(did, DriverState(v["state"]), np.array(v["pos"]), v["free_at"],
-                                                 v["has_next"])
+                self.drivers[v["driver"]] = _driver_record(v)
+                if v.get("seq", 0) >= self.awaiting.get(v["driver"], math.inf):
+                    del self.awaiting[v["driver"]]
         elif m.topic == OFFER_RESPONSES:
             oid = v["offer_id"]
             self.resolved.add(oid)
             self.pending.pop(oid, None)
             if v["outcome"] == "declined" and v["rider"] in self.waiting:
                 self.declined.setdefault(v["rider"], set()).add(v["driver"])
+            did = v["driver"]
+            if "driver_seq" in v and (did not in self.drivers or self.drivers[did].seq < v["driver_seq"]):
+                self.awaiting[did] = v["driver_seq"]  # its new status is still on the way
         elif m.topic == DISPATCH_OFFERS:
             # Our own offers. Only needed while catching up, to restore offers still in flight.
             if self.catching_up and v["offer_id"] not in self.resolved:
                 self.pending[v["offer_id"]] = Pending(v["rider"], v["driver"], v["batch_t"])
+        elif m.topic == REPOSITION_MOVES and typ == "move_response":
+            key = v["outcome"] if v["outcome"] == "started" else f"rejected:{v.get('reason')}"
+            self.move_outcomes[key] = self.move_outcomes.get(key, 0) + 1
 
     def step(self, timeout_s: float = 0.0) -> int:
         """Read what's available, then dispatch if a batch boundary has passed. Returns messages read."""
@@ -175,8 +246,12 @@ class Matcher:
                 # Joined a run in progress: boundaries up to the history's watermark were already dispatched
                 # (by the previous matcher instance), so resume at the next one.
                 self.next_k = math.floor(min(self.replay_marks.values()) / self.dispatch.interval_s) + 1
+                if self.repo is not None:
+                    self.next_j = max(1, math.floor(min(self.replay_marks.values()) / self.repo.interval_s) + 1)
         if not self.catching_up:
             self._maybe_dispatch()
+            if self.repo is not None:
+                self._maybe_reposition()
         return len(msgs)
 
     # ------------------------------------------------------------ dispatch
@@ -191,6 +266,38 @@ class Matcher:
         # Latency diagnostic: the tick that completed this watermark was sent by the simulator at this wall time.
         sent = self.mark_wall.get(min(self.marks, key=self.marks.get))
         self._dispatch(k * self.dispatch.interval_s, sent)
+
+    def _maybe_reposition(self) -> None:
+        """Offline, a repositioning round runs right after the batch at the same instant. So a round waits for
+        the watermark, for the batch at its boundary to be solved, and for that batch's offers to be answered."""
+        rc, wm = self.repo, self.watermark()
+        if self.repo_due is None:
+            t = self.next_j * rc.interval_s
+            if not math.isfinite(wm) or wm < t or (self.next_j > 1 and t >= self.duration_s):
+                return
+            if (self.next_k - 1) * self.dispatch.interval_s < t:
+                return  # the batch at this boundary hasn't been solved yet
+            # Behind by several rounds: plan once, at the latest.
+            self.next_j = math.floor(wm / rc.interval_s) + 1
+            self.repo_due = (self.next_j - 1) * rc.interval_s
+        if self.awaiting or any(p.batch_t <= self.repo_due for p in self.pending.values()):
+            return  # the batch's matches haven't all shown up in the driver statuses yet
+        self._reposition(self.repo_due)
+        self.repo_due = None
+
+    def _reposition(self, now: float) -> None:
+        from ..reposition import plan_round
+
+        rc = self.repo
+        zone_of = lambda p: self.zones.zone_of(float(p[0]), float(p[1]))  # noqa: E731
+        drivers = [self.drivers[i] for i in sorted(self.drivers)]
+        moves = plan_round(drivers, now, zone_of, self.estimator, self.targets, self.travel, rc,
+                           self.dispatch.chain_horizon_s)
+        head = {"v": VERSION, "run": self.run, "t": now, "type": "move", "plan_t": now, "wall": time.time()}
+        for did, zone in moves:
+            self.moves_sent += 1
+            self.producer.produce(REPOSITION_MOVES, str(did), {
+                **head, "move_id": f"m{int(now)}-{did}", "driver": did, "zone": zone})
 
     def _expire(self, wm: float) -> None:
         # The simulator rejects offers applied more than offer_timeout_s after their batch, and
@@ -269,7 +376,7 @@ def main(argv=None) -> None:
                     s = matcher.stats
                     print(f"matcher: run {matcher.run} wm={matcher.watermark():.0f}s batches={s.batches} "
                           f"waiting={len(matcher.waiting)} pending={len(matcher.pending)} "
-                          f"skipped={matcher.skipped} expired={matcher.expired} "
+                          f"skipped={matcher.skipped} expired={matcher.expired} moves={matcher.moves_sent} "
                           f"solve_ms_mean={np.mean(s.solve_ms) if s.solve_ms else 0:.1f}", flush=True)
             if args.exit_after_run and not matcher.catching_up and matcher.run_finished() and matcher.run != stale:
                 print(f"matcher: run {matcher.run} ended after {matcher.stats.batches} batches", flush=True)

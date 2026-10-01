@@ -42,7 +42,7 @@ from ..geo import Route, TravelTimeModel
 from ..data.slices import run_start_and_frac
 from ..matching import get_strategy
 from ..pricing import DemandEstimator, conversion, zone_prices
-from ..reposition import Mover, drift_moves, historical_demand, plan_moves, zone_targets
+from ..reposition import Mover, drift_moves, historical_demand, plan_round, zone_targets
 from ..routing import make_travel_model
 from .config import SimConfig
 from .demand import RiderSpec, generate_riders, initial_driver_positions
@@ -125,6 +125,11 @@ class Driver:
     @property
     def has_next(self) -> bool:
         return self.next_rider_id is not None
+
+    @property
+    def move_zone(self) -> Optional[int]:
+        """The zone a repositioning driver is heading to."""
+        return self.move["zone"] if self.move is not None else None
 
 
 # Event kinds, ordered so that at equal timestamps world events run before dispatch,
@@ -433,26 +438,16 @@ class Simulation:
 
     def _on_reposition(self) -> None:
         rc = self.cfg.reposition
-        idle = [d for d in self.drivers if d.state is DriverState.IDLE]
-        movers = [Mover(d.id, d.pos, self._zone_of(d.pos), self.now - d.state_since) for d in idle]
-        if hasattr(self.belief, "set_time"):
-            self.belief.set_time(self.now)
         if rc.policy == "drift":
+            idle = [d for d in self.drivers if d.state is DriverState.IDLE]
+            movers = [Mover(d.id, d.pos, self._zone_of(d.pos), self.now - d.state_since) for d in idle]
+            if hasattr(self.belief, "set_time"):
+                self.belief.set_time(self.now)
             usual = historical_demand(self.repo_fc, self.start + timedelta(seconds=self.now))
             moves = drift_moves(movers, usual, self.repo_targets, self.belief, rc, len(idle))
         else:
-            horizon = self.cfg.dispatch.chain_horizon_s
-            supply: Counter = Counter()
-            for d in self.drivers:
-                if d.state is DriverState.IDLE:
-                    supply[self._zone_of(d.pos)] += 1
-                elif d.state is DriverState.REPOSITIONING:  # already on its way: counts where it is going
-                    supply[d.move["zone"]] += 1
-                elif (horizon > 0 and d.state is DriverState.ON_TRIP and not d.has_next
-                      and d.free_at - self.now <= horizon):
-                    supply[self._zone_of(d.pos)] += 1
-            demand = self.repo_estimator.estimate(sorted(self.repo_targets), self.now)
-            moves = plan_moves(movers, supply, demand, self.repo_targets, self.belief, rc, len(idle))
+            moves = plan_round(self.drivers, self.now, self._zone_of, self.repo_estimator, self.repo_targets,
+                               self.belief, rc, self.cfg.dispatch.chain_horizon_s)
         for did, zone in moves:
             self._start_move(self.drivers[did], zone)
         if self.now + rc.interval_s < self.cfg.demand.duration_s:

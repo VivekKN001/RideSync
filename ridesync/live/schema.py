@@ -13,6 +13,7 @@ rider-events        rider id   quoted (surge pricing only), requested, matched, 
 driver-events       driver id  status, ping
 dispatch-offers     driver id  offer
 offer-responses     rider id   offer_response
+reposition-moves    driver id  move (M10: the matcher's repositioning plan), move_response (the simulator's answer)
 dispatch-batches    run id     batch
 zone-features       run|zone   zone_minute (Flink: per taxi zone, per simulated minute)
 late-events         run|zone   the late event, as received
@@ -44,8 +45,9 @@ DISPATCH_BATCHES = "dispatch-batches"
 ZONE_FEATURES = "zone-features"   # written by the Flink job (ridesync.stream)
 LATE_EVENTS = "late-events"       # world events that arrived after their window closed
 ZONE_PRICES = "zone-prices"       # M6 surge prices
+REPOSITION_MOVES = "reposition-moves"  # M10: repositioning moves from the matcher, and the simulator's answers
 ALL_TOPICS = (RIDER_EVENTS, DRIVER_EVENTS, DISPATCH_OFFERS, OFFER_RESPONSES, DISPATCH_BATCHES, ZONE_FEATURES,
-              LATE_EVENTS, ZONE_PRICES)
+              LATE_EVENTS, ZONE_PRICES, REPOSITION_MOVES)
 WORLD_TOPICS = (RIDER_EVENTS, DRIVER_EVENTS)  # carry run_start / tick / run_end on every partition
 
 CONTROL_TYPES = frozenset({"run_start", "tick", "run_end"})
@@ -72,20 +74,27 @@ class RiderEvent(_Base, total=False):
     request_t: float          # requested
     driver: int               # matched, picked_up, dropped_off
     quoted_eta_s: float       # matched
-    reason: str               # cancelled: "no_match" | "eta_quote"
+    reason: str               # cancelled: "no_match" | "eta_quote" | "late_driver" (gave up on a late driver)
     multiplier: float         # quoted: surge multiplier shown when the rider opened the app
     accepted: bool            # quoted: the rider requested at that price
     attempt: int              # quoted: 0 = first app open, 1 = the retry
 
 
-class DriverStatus(_Base):
+class DriverStatus(_Base, total=False):
     driver: int
     seq: int                  # per driver, increasing: orders statuses that share a timestamp
-    state: Literal["idle", "en_route", "on_trip"]
+    state: Literal["idle", "en_route", "on_trip", "repositioning", "offline"]
     pos: List[float]          # where the current leg ends (an idle driver's location)
     free_at: float            # when the current leg ends
     has_next: bool            # a next rider is queued after this trip
     rider: Optional[int]
+    since: float              # when the driver entered this state (repositioning picks long-idle drivers first)
+    # repositioning only (M10): the zone it is heading to and the leg, so a consumer can place the driver
+    # on the way at any time: vertices [[lat, lon], ...], the time each is reached after t0, and t0
+    move_zone: int
+    path: List[List[float]]
+    cum_s: List[float]
+    t0: float
 
 
 class DriverPing(_Base):
@@ -107,7 +116,23 @@ class OfferResponse(_Base, total=False):
     rider: int
     driver: int
     outcome: Literal["accepted", "declined", "quote_cancelled", "rejected"]
-    reason: str               # rejected: "rider_gone" | "driver_busy" | "expired"
+    reason: str               # rejected: "rider_gone" | "driver_busy" | "driver_offline" | "expired"
+    driver_seq: int           # accepted: seq of the driver status the match produced
+
+
+class Move(_Base):
+    move_id: str
+    plan_t: float             # the repositioning round (event time) that planned it
+    driver: int
+    zone: int                 # target taxi zone; the simulator drives to its fixed point in that zone
+
+
+class MoveResponse(_Base, total=False):
+    move_id: str
+    driver: int
+    zone: int
+    outcome: Literal["started", "rejected"]
+    reason: str               # rejected: "driver_busy" (no longer idle) | "expired" | "no_route"
 
 
 class BatchRecord(_Base):

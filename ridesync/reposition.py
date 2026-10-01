@@ -96,6 +96,33 @@ def drift_moves(movers: Sequence[Mover], usual: Mapping[int, float], targets: Ma
     return moves
 
 
+def plan_round(drivers, now: float, zone_of, estimator, targets: Mapping[int, np.ndarray], travel: "TravelTimeModel",
+               cfg: "RepositionConfig", chain_horizon_s: float) -> List[Move]:
+    """One round of the platform's plan from a view of the fleet: the offline engine's own drivers or the live
+    matcher's rebuilt ones, so both plan identically. A driver needs ``id``, ``state``, ``pos``, ``state_since``,
+    ``free_at``, ``has_next`` and ``move_zone`` (where a repositioning driver is heading)."""
+    from .dispatch import DriverState
+
+    idle = [d for d in drivers if d.state is DriverState.IDLE]
+    movers = [Mover(d.id, d.pos, zone_of(d.pos), now - d.state_since) for d in idle]
+    if hasattr(travel, "set_time"):
+        travel.set_time(now)
+    supply: Dict[int, float] = {}
+    for d in drivers:
+        if d.state is DriverState.IDLE:
+            z = zone_of(d.pos)
+        elif d.state is DriverState.REPOSITIONING:  # already on its way: counts where it is going
+            z = d.move_zone
+        elif (chain_horizon_s > 0 and d.state is DriverState.ON_TRIP and not d.has_next
+              and d.free_at - now <= chain_horizon_s):
+            z = zone_of(d.pos)
+        else:
+            continue
+        supply[z] = supply.get(z, 0) + 1
+    demand = estimator.estimate(sorted(targets), now)
+    return plan_moves(movers, supply, demand, targets, travel, cfg, len(idle))
+
+
 def plan_moves(movers: Sequence[Mover], supply: Mapping[int, float], demand: Mapping[int, float],
                targets: Mapping[int, np.ndarray], travel: "TravelTimeModel", cfg: "RepositionConfig",
                n_idle: int) -> List[Move]:

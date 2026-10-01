@@ -55,7 +55,7 @@ class Recorder:
             plat, plon = prev.get(i, (0, 0))
             d += [i, qlat - plat, qlon - plon, state]
             prev[i] = (qlat, qlon)
-            if state == 1 and to_lat is not None:
+            if state in (1, 3) and to_lat is not None:  # to the pickup, or to where it is repositioning
                 en_route.append([i, *self.q(to_lat, to_lon)])
         new_matches = [m for m in s["matches"] if m[0] not in self._matched]
         self._matched.update(m[0] for m in new_matches)
@@ -126,6 +126,8 @@ def record(cfg, step_s: float = 5.0) -> dict:
     d = cfg.dispatch
     strategy = "optimal" if d.strategy == "lsa" else d.strategy
     doc["note"] = f"{cfg.drivers.num_drivers} drivers · {strategy} matching every {d.interval_s:g} s"
+    if cfg.reposition.policy != "none":
+        doc["note"] += f" · {cfg.reposition.policy} repositioning"
     return doc
 
 

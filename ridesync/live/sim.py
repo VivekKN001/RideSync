@@ -4,9 +4,12 @@
     python -m ridesync.live.sim --speed 30 --travel osrm --compare-offline
     python -m ridesync.live.sim --speed 20 --surge reactive                  # M6: the simulator prices zones
     python -m ridesync.live.sim --speed 20 --surge forecast --price-service  # M6: ridesync.live.pricing does
+    python -m ridesync.live.sim --speed 20 --reposition none --no-late-cancel  # without the M10 behaviour
 
 Defaults are the best M2 arm: optimal matching every 30 s with the cancellation-aware cost,
-500 drivers, on the TLC slice. At the end it prints the metrics, the live diagnostics
+500 drivers, on the TLC slice. Since M10 the run also has the matcher's repositioning plan (M7's best,
+``planned`` with the demand forecast) and riders who give up on a late driver; with ``--surge``, reserve
+drivers log on and idle drivers chase higher prices (M6b's medium response). At the end it prints the metrics, the live diagnostics
 (offer round-trip in simulated seconds, rejected offers, lag behind the wall clock) and,
 with ``--compare-offline``, the offline simulator's metrics for the same config and seed.
 """
@@ -29,11 +32,14 @@ from ..sim import SimConfig, simulate, summarize
 from .world import LiveConfig, LiveSimulation
 
 AWARE = CostParams(trip_value_s=900.0, cancel=CancelBelief())
+# M6b's medium driver response (experiments/m6b_supply.py)
+SUPPLY = {"supply.reserve_share": 0.2, "supply.log_on_elasticity": 1.0, "supply.chase_strength": 0.5}
 REPORT = [
-    "requests", "completed", "cancel_rate", "wait_all_mean_s", "wait_mean_s", "pickup_mean_s",
+    "requests", "completed", "cancel_rate", "cancel_late_rate", "wait_all_mean_s", "wait_mean_s", "pickup_mean_s",
     "time_to_match_mean_s", "completed_per_hour", "driver_idle_frac", "batches", "batch_riders_mean",
     "solve_ms_mean", "decline_rate",
     "app_opens", "priced_out_rate", "served_rate", "mean_multiplier_paid", "revenue_per_hour", "eta_abs_error_mean_s",
+    "moves_per_driver_hour", "reposition_km_per_hour", "drivers_online_mean", "reserve_logons",
 ]
 
 
@@ -51,6 +57,15 @@ def add_args(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--surge", choices=["off", "reactive", "forecast"], default="off", help="M6 surge pricing")
     ap.add_argument("--elasticity", type=float, default=None, help="rider price elasticity (default: PricingConfig)")
     ap.add_argument("--eta-model", default=None, help="M6 ETA correction on the travel model (data/models/eta_<travel>.joblib)")
+    ap.add_argument("--reposition", choices=["none", "drift", "planned"], default="planned",
+                    help="M7/M10 idle-driver repositioning: planned by the matcher, or drivers drifting on their own")
+    ap.add_argument("--reposition-demand", choices=["reactive", "forecast"], default="forecast",
+                    help="planned: expected demand from recent app opens or the demand model (falls back to reactive "
+                         "without the model or a real start time)")
+    ap.add_argument("--late-cancel", action=argparse.BooleanOptionalAction, default=True,
+                    help="riders give up on a driver who is late against the quoted pickup")
+    ap.add_argument("--supply", action=argparse.BooleanOptionalAction, default=True,
+                    help="with --surge: reserve drivers log on and idle drivers chase higher prices (M6b)")
 
 
 def config_from_args(args) -> SimConfig:
@@ -73,6 +88,11 @@ def config_from_args(args) -> SimConfig:
         o["pricing.demand"] = args.surge
         if args.elasticity is not None:
             o["pricing.elasticity"] = args.elasticity
+        if args.supply:
+            o.update(SUPPLY)
+    if args.late_cancel:
+        o["riders.enroute_cancel"] = True
+    o.update(_reposition(args))
     cfg = SimConfig().with_(**o)
     if args.eta_model:
         from dataclasses import replace
@@ -84,6 +104,28 @@ def config_from_args(args) -> SimConfig:
 
         cfg = cfg.with_(fare=fare_from_file(str(fare)))
     return cfg
+
+
+def _reposition(args) -> dict:
+    """Repositioning overrides, stepping down to what the local files allow (with a note)."""
+    from ..sim.config import RepositionConfig
+
+    rc = RepositionConfig()
+    if args.reposition == "none":
+        return {}
+    missing = [p for p in (rc.zones_path, rc.points_path) if not Path(p).exists()]
+    if missing:
+        print(f"note: no repositioning, it needs {' and '.join(missing)}", flush=True)
+        return {}
+    o = {"reposition.policy": args.reposition, "reposition.demand": args.reposition_demand}
+    needs_model = args.reposition == "drift" or args.reposition_demand == "forecast"
+    if needs_model and (args.slice == "synthetic" or not Path(rc.forecast_path).exists()):
+        if args.reposition == "drift":
+            print(f"note: no repositioning, drift needs {rc.forecast_path} and a TLC slice", flush=True)
+            return {}
+        print("note: repositioning on recent app opens; the forecast needs the demand model and a TLC slice", flush=True)
+        o["reposition.demand"] = "reactive"
+    return o
 
 
 def diagnostics(sim: LiveSimulation, wall_s: float) -> Dict[str, float]:
@@ -104,6 +146,7 @@ def diagnostics(sim: LiveSimulation, wall_s: float) -> Dict[str, float]:
         "offer_transit_ms_p99": pct(transit_ms, 99),
         "rejected_frac": rejected / offers if offers else 0.0,
         **{f"n_{k}": v for k, v in sorted(sim.outcomes.items())},
+        **{f"moves_{k}": v for k, v in sorted(sim.move_outcomes.items())},
         "max_lag_s": sim.max_lag_s,
     }
 
@@ -151,7 +194,7 @@ def main(argv=None) -> None:
     cols = ["live"] + (["offline"] if args.compare_offline else [])
     print(f"{'metric':<24}" + "".join(f"{c:>14}" for c in cols))
     for k in REPORT:
-        print(f"{k:<24}" + "".join(f"{out[c][k]:>14.4g}" for c in cols))
+        print(f"{k:<24}" + "".join(f"{out[c].get(k, float('nan')):>14.4g}" for c in cols))
     print("\ndiagnostics")
     for k, v in diag.items():
         print(f"  {k:<22} {v:.4g}" if isinstance(v, float) else f"  {k:<22} {v}")

@@ -26,7 +26,7 @@ from ..live.schema import DRIVER_EVENTS, RIDER_EVENTS, ZONE_FEATURES
 from ..stream.zones import ZONES_JSON
 
 STATIC = Path(__file__).with_name("static")
-STATE_CODE = {"idle": 0, "en_route": 1, "on_trip": 2}
+STATE_CODE = {"idle": 0, "en_route": 1, "on_trip": 2, "repositioning": 3, "offline": 4}
 CANCEL_SHOW_S = 90.0  # simulated seconds a cancellation stays on the map
 MATCH_SHOW_S = 60.0   # simulated seconds a match stays in the snapshot (the page animates each one once)
 
@@ -73,8 +73,8 @@ class LiveView:
                 d[2] = code
                 if code == 0:
                     d[0], d[1], d[3], d[4] = v["pos"][0], v["pos"][1], None, None
-                elif code == 1:
-                    d[3], d[4] = v["pos"]  # en route: the leg ends at the pickup
+                elif code in (1, 3):
+                    d[3], d[4] = v["pos"]  # en route or repositioning: the leg ends at the pickup or the target
                 else:
                     d[3] = d[4] = None
             elif typ == "requested":

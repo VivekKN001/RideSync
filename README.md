@@ -72,8 +72,8 @@ results are reported alongside the positive ones.
 Offline and live build and solve batches with the same `ridesync.dispatch` code. A lockstep test shows that the
 live path, run with zero latency, gives results bit-identical to offline, so any difference between the modes is
 latency alone. The per-milestone diagrams are further down: [live mode](#live-mode-m3),
-[stream features](#stream-features-and-screens-m4-m5), [ML and surge](#demand-forecast-surge-pricing-eta-correction-m6)
-and [repositioning](#repositioning-m7).
+[stream features](#stream-features-and-screens-m4-m5), [ML and surge](#demand-forecast-surge-pricing-eta-correction-m6),
+[repositioning](#repositioning-m7) and [repositioning and driver behaviour live](#live-repositioning-drivers-and-riders-who-decide-m10).
 
 ## Tech stack
 
@@ -139,11 +139,11 @@ caveats: [`experiments/FINDINGS.md`](experiments/FINDINGS.md).
 | M4 | PyFlink job: driver state, windowed zone features, late events | done: stream features below |
 | M5 | Postgres sink, ClickHouse, Grafana, deck.gl live map | done: screens below |
 | M6 | ML: demand forecast, ETA correction (live traffic, ranges), fare fit, surge policy + elasticity | done |
-| M6b | Drivers who respond to surge: a reserve that logs on, idle drivers who chase prices (offline) | done: [findings](experiments/FINDINGS.md) |
-| M7 | Idle-driver repositioning: drift baseline vs coordinated plan (offline) | done |
+| M6b | Drivers who respond to surge: a reserve that logs on, idle drivers who chase prices | done: [findings](experiments/FINDINGS.md) |
+| M7 | Idle-driver repositioning: drift baseline vs coordinated plan | done |
 | M8 | 31 months of TLC data (2024-01..2026-07), models tested on July 2026, experiments on 3 more days and at full scale; M8c: three more test months | done: recent data below |
 | M9 | Free public demo: replay on GitHub Pages, in-process demo mode, sharing over a tunnel, locked-down stack | done: public demo below |
-| M10 | Repositioning, drivers logging on and off, and en-route cancellation in live mode | next |
+| M10 | Repositioning, drivers logging on and off, and en-route cancellation in live mode | done: live behaviour below |
 
 ## Limitations
 
@@ -155,8 +155,6 @@ caveats: [`experiments/FINDINGS.md`](experiments/FINDINGS.md).
   evening; the morning peak, Saturday night and full scale only on July. At full scale on road times only 3 fleet
   sizes, 3 strategies and 2 seeds were run (a run takes 1.5-3.5 hours); the complete grid is left to run in the
   background (`--resume`).
-- **Repositioning is offline only.** The live matcher doesn't track repositioning, drivers logging on or off, or
-  en-route cancellation yet (M10). Not reassigning riders after dispatch is a design decision (below), not a gap.
 - **Single machine.** Kafka has one broker and no replication. The live stack is a demo, not a deployment.
 
 ## Decisions
@@ -282,8 +280,7 @@ running and surge priced by the separate pricing service (`--surge forecast --pr
   hot spots on their own, so `drift` models that.
 - **Tested on unseen days.** The M7 experiment runs on 2026-07-22, and M8b adds three more days, all in the
   demand model's test month (it was 2024-03-27 before M8).
-- **Offline only.** The live simulator refuses repositioning (and en-route cancellation) configs: the live matcher
-  doesn't track those states yet.
+- **Live too (M10).** The matcher plans the moves in live mode; see below.
 
 ## Recent data and more days (M8)
 
@@ -338,6 +335,38 @@ so the datasources connect as read-only users:
 `share` refuses to expose Grafana while the admin password is the example one or anonymous visitors can edit.
 Flink's UI stays local, because it can submit jobs.
 
+## Live repositioning, drivers and riders who decide (M10)
+
+```
+ matcher (the platform)                                   live simulator (the world)
+ every 5 min of event time, once that instant's batch ──► reposition-moves ──► starts the move if the driver
+ is answered: plan_round() on its own view of the fleet                        is still idle; answers each one
+   ▲ driver-events: status + leg of a repositioning driver (path, timing, target zone), time in state
+   └ rider-events: app opens (demand estimate), cancellations, incl. riders giving up on a late driver
+                                                          drivers' own decisions stay here, as offline:
+                                                          drift to busy zones, log on/off, chase surge (M6b)
+```
+
+- **Who decides what.** The coordinated plan is the platform's, so the matcher makes it, from the state it already
+  rebuilds from events. What drivers and riders decide for themselves (drifting, logging on and off, chasing
+  surge, giving up on a late driver) stays in the simulator, which is the world.
+- **Same plan as offline.** The engine and the matcher call the same `ridesync.reposition.plan_round`. Offline, a
+  round runs right after the batch at the same instant, so the matcher waits until that batch's offers are
+  answered and the matched drivers' new statuses have arrived (an answer carries the status sequence number it
+  produced, because Kafka doesn't order the two topics). A repositioning driver's status carries its route, so the
+  matcher dispatches it from where it is on the way, exactly as offline.
+- **Proof:** lockstep runs are bit-identical to offline with planned repositioning (reactive and forecast demand),
+  drift, the supply response, late cancels, and all of them at once, with 1 and 3 partitions and with reordered
+  delivery (`tests/test_m10.py`). A restarted matcher rebuilds repositioning drivers and the demand estimate from
+  the topics. Stale moves, and offers to a driver who has logged off, are rejected with a reason.
+- **Downstream.** Flink counts a repositioning driver as free supply in the zone it is heading to (as the planner
+  does); offline drivers are not free. The live map draws repositioning drivers in violet with a line to their
+  target and hides offline ones. ClickHouse stores moves (`reposition_moves`); Grafana adds drivers by state over
+  time and moves and late cancels per 10 s.
+- **On by default.** `ridesync.live.sim`, `--demo` and the recorder run the matcher's plan (forecast demand when the
+  model and a TLC slice are there) and riders who give up on late drivers; with `--surge`, drivers respond to
+  prices. `--reposition none|drift|planned`, `--no-late-cancel` and `--no-supply` turn them off.
+
 ## Layout
 
 ```
@@ -351,7 +380,8 @@ ridesync/stream/     zones (point -> taxi zone, dependency-free), features (zone
 ridesync/sinks/      postgres (trip ledger)
 ridesync/ml/         M6 models: demand (forecast), fare (fit), eta (correction + noisy world), train (CLI)
 ridesync/pricing.py  surge policy, rider conversion, demand estimates (shared by the simulator and live pricing)
-ridesync/reposition.py  M7 policies: drift to usual hot spots, planned rebalancing
+ridesync/reposition.py  M7 policies: drift to usual hot spots, planned rebalancing (plan_round: offline
+                        engine and live matcher)
 ridesync/live/pricing.py  live pricing service: zone-features -> zone-prices
 ridesync/web/        live map server (FastAPI + WebSocket) and page; demo (in-process run), record (static
                      replay), share (Cloudflare tunnels)
@@ -366,7 +396,8 @@ ridesync/data/       downloads; TLC high-volume FHV trips -> demand slices with 
 ridesync/experiments.py   parallel grid runner + paired comparisons
 experiments/         experiment scripts and results
 tests/               Hungarian vs brute force / scipy, strategy validity, simulator invariants,
-                     live == offline in lockstep, matcher restart, Kafka end to end (when a broker is up),
+                     live == offline in lockstep (M10: with repositioning, supply response, late cancels),
+                     matcher restart, Kafka end to end (when a broker is up),
                      zone features vs simulator totals, trip ledger against real Postgres (when it is up)
 ```
 
@@ -418,6 +449,8 @@ python experiments/m2_real_demand.py --travel osrm
 docker compose up -d kafka
 python -m ridesync.live.matcher                              # terminal 1: runs until Ctrl+C
 python -m ridesync.live.sim --speed 10 --compare-offline     # terminal 2: 3 h of demand in ~18 min
+#   M10 on by default: the matcher's repositioning plan and riders who give up on late drivers;
+#   --reposition none|drift|planned, --no-late-cancel; with --surge, --no-supply turns off the driver response
 python experiments/m3_live_vs_offline.py                     # offline vs lockstep vs live at 10x/30x/60x
 
 # M4: stream features (Flink UI on http://localhost:8081)
@@ -472,6 +505,8 @@ python -m ridesync.live.sim --speed 20 --surge forecast --price-service
 docker compose --profile storage up -d                       # Grafana on http://localhost:3000 (admin: see .env)
 # existing ClickHouse volume from before M6 (init scripts run only once):
 docker compose exec -T clickhouse clickhouse-client --multiquery < docker/clickhouse/init/02_m6.sql
+# ... and from before M10 (repositioning moves):
+docker compose exec -T clickhouse clickhouse-client --multiquery < docker/clickhouse/init/03_m10.sql
 # existing volumes from before M9: set the new passwords and create Grafana's read-only Postgres role
 docker compose --profile storage exec postgres sh /docker-entrypoint-initdb.d/02_roles.sh
 docker compose --profile storage exec grafana grafana cli admin reset-admin-password <GRAFANA_ADMIN_PASSWORD>

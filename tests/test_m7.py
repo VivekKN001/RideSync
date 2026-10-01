@@ -65,16 +65,6 @@ def test_driver_of_a_cancelled_rider_stops_on_the_way():
     assert checked > 0
 
 
-def test_live_mode_refuses_enroute_cancel_and_repositioning():
-    from ridesync.live.bus import InMemoryBus
-    from ridesync.live.world import LiveSimulation
-
-    with pytest.raises(ValueError, match="offline only"):
-        LiveSimulation(SMALL.with_(**LATE), InMemoryBus())
-    with pytest.raises(ValueError, match="offline only"):
-        LiveSimulation(SMALL.with_(**{"reposition.policy": "planned"}), InMemoryBus())
-
-
 # ------------------------------------------------------------------ repositioning policies (M7)
 RC = RepositionConfig(policy="planned", min_idle_s=60.0, max_move_s=900.0, max_share=1.0)
 A, B, C = 1, 2, 3

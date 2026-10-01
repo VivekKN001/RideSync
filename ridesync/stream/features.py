@@ -10,7 +10,9 @@ event and turn it into *zone events*.
   one app open (``quotes``, first attempt only) and, if they didn't request, one ``declines``. It
   needs no rider state: the quote carries its own origin.
 - A driver status turns into supply changes: +1 free driver in a zone when the
-  driver becomes idle there, -1 when it leaves idle.
+  driver becomes free there, -1 when it stops being free. Free = idle, or repositioning (M10), counted in
+  the zone it is heading to (its status ``pos``), as the repositioning planner counts it. Offline drivers
+  are not free.
 - Out of order: a driver status older than the last one applied is ignored
   (the newer state already supersedes it). "Older" compares (time, seq): a
   driver can change state twice in one instant (trip ends, next pickup starts). Rider events that arrive before the
@@ -27,6 +29,8 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Tuple
 
 from .zones import ZoneIndex
+
+FREE_STATES = ("idle", "repositioning")  # dispatchable now, where the status says the driver will be
 
 WINDOW_S = 60.0
 QUIET_WINDOWS = 3  # keep emitting rows for a zone this many minutes after its last event
@@ -65,7 +69,7 @@ def _enrich_driver(state: Optional[dict], msg: dict, zones: ZoneIndex) -> Tuple[
     order = (msg["t"], msg.get("seq", 0))
     if state is not None and order <= (state["t"], state.get("seq", 0)):
         return state, []  # superseded by a newer status we already applied
-    idle = msg["state"] == "idle"
+    idle = msg["state"] in FREE_STATES
     zone = zones.zone_of(msg["pos"][0], msg["pos"][1])
     was_idle, old_zone = (state["idle"], state["zone"]) if state else (False, None)
     out = []
