@@ -462,7 +462,7 @@ python experiments/m1b_cancel_aware.py
 python experiments/m1c_batch_gap.py
 
 # M2: real Manhattan demand (since M8: Wednesday 15 July 2026, 17:00-20:00)
-# Monthly TLC files are ~0.5 GB; RIDESYNC_TLC_DIR puts them on another disk (default data/raw).
+# Monthly TLC files are ~0.5 GB; RIDESYNC_TLC_DIR (environment or .env) puts them on another disk (default data/raw).
 python -m ridesync.data.fetch --tlc 2026-07 --osm            # TLC trips + zones, NYC OSM extract
 python -m ridesync.data.tlc --date 2026-07-15 --start 17:00 --hours 3 --boroughs Manhattan --sample-frac 0.1
 python -m ridesync.routing.calibrate --slice data/processed/trips_2026-07-15_1700_3h_manhattan_f0.1.parquet

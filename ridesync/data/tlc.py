@@ -16,16 +16,18 @@ Columns worth knowing:
 from __future__ import annotations
 
 import argparse
-import os
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
 import numpy as np
 import pandas as pd
 
+from ..env import setting
+
 RAW = Path("data/raw")
-# Monthly trip files are ~0.5 GB each; RIDESYNC_TLC_DIR puts them on a bigger disk (default: data/raw).
-TLC_DIR = Path(os.environ.get("RIDESYNC_TLC_DIR") or RAW)
+# Monthly trip files are ~0.5 GB each; RIDESYNC_TLC_DIR puts them on a bigger disk (default: data/raw). Like the
+# other settings it comes from the environment or from .env, so a machine keeps its own path out of the code.
+TLC_DIR = Path(setting("RIDESYNC_TLC_DIR") or RAW)
 PROCESSED = Path("data/processed")
 ZONES_ZIP = RAW / "taxi_zones.zip"
 ZONES_LAYER = "taxi_zones/taxi_zones.shp"
