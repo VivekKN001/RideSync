@@ -126,6 +126,7 @@ caveats: [`experiments/FINDINGS.md`](experiments/FINDINGS.md).
 | How good is the ETA? (M6, M8c) | A learned correction with live traffic features: **24.0% MAPE**, against 40.8% for OSRM alone. That is at the limit of zone-level data (an oracle scores 22–29%). The 10–90% range covers 78% of trips. On four test months: 24.3–24.8% every month. |
 | Does an honest ETA matter? (M6, M8b) | When riders give up on late drivers, the learned ETA adds **+5% to +12% trips/h (+44 to +87)** over a simple distance × hour table (July 2026: +5% to +14%; **on road times +8% to +57%**), and +25% to +130% over one city-wide speed (tolerances of 5 to 2 min). |
 | Does surge help? (M6, M6b) | **Only if drivers respond.** With a fixed fleet it rations demand: fewer trips on every day tested. When a reserve of drivers logs on under surge, it adds **+60 to +90 trips/h (+8–11%)** on busy evenings with 300 drivers and lifts fares per online driver-hour from ~$62 to $81–103. Drivers who only chase surge add nothing. With slack, free repositioning beats surge on every day. The forecast doesn't beat current demand. |
+| Do the results hold on other days? (M8d) | **Yes, on every Wednesday evening of the four test months (19 days).** No effect reverses on any evening; the only non-positive day is batching at 500 drivers, where it is ±0.0 anyway. Over the 19: batching **+7.5 ± 1.8% trips/h** at 300 drivers, repositioning **+2.3 ± 0.2%** at 500, the learned ETA **+8.3 ± 0.7%**, surge with a fixed fleet **−4.3 ± 0.4%**, surge with drivers who respond **+8.0 ± 1.7%**. Mornings and Saturday nights repeat July's pattern in every month: in the morning peak batching gives little (+2% at 300 drivers, ±0 at 400–500) and repositioning **+6.6–7.2%**; on Saturday nights batching gives **+13%**. Sizes vary 2–5× between days of the same month, more than between months: in January three evenings gave +3% from batching and one +12%, so a single test day per month was a sample of one. |
 | Does moving idle drivers help? (M7, M8b) | With slack (500 drivers), coordinated repositioning **halves cancellations (6.9% → 3.5%), cuts pickups 37–43 s, +4% trips/h** for +1.3–1.9 pp empty driving. In the morning peak, where commuter flows strand idle cars, it's the biggest lever in the project: **−7.2 pp cancellations, +76 trips/h**. Uncoordinated drift to hot spots doesn't help. |
 
 ## Status
@@ -141,7 +142,7 @@ caveats: [`experiments/FINDINGS.md`](experiments/FINDINGS.md).
 | M6 | ML: demand forecast, ETA correction (live traffic, ranges), fare fit, surge policy + elasticity | done |
 | M6b | Drivers who respond to surge: a reserve that logs on, idle drivers who chase prices | done: [findings](experiments/FINDINGS.md) |
 | M7 | Idle-driver repositioning: drift baseline vs coordinated plan | done |
-| M8 | 31 months of TLC data (2024-01..2026-07), models tested on July 2026, experiments on 3 more days and at full scale; M8c: three more test months | done: recent data below |
+| M8 | 31 months of TLC data (2024-01..2026-07), models tested on July 2026, experiments on 3 more days and at full scale; M8c: three more test months; M8d: every Wednesday evening of the four, plus a morning and a Saturday night each | done: recent data below |
 | M9 | Free public demo: replay on GitHub Pages, in-process demo mode, sharing over a tunnel, locked-down stack | done: public demo below |
 | M10 | Repositioning, drivers logging on and off, and en-route cancellation in live mode | done: live behaviour below |
 
@@ -151,10 +152,10 @@ caveats: [`experiments/FINDINGS.md`](experiments/FINDINGS.md).
   price elasticity or how drivers respond to surge, so the experiments vary them instead of claiming one true value.
 - **Zone-level data.** TLC records zones, not coordinates, so trip ends are sampled inside zone polygons. That puts
   a floor under ETA accuracy, and the M6 report measures it.
-- **One day per test month.** Four test months (October, January, April, July) are each tested on one Wednesday
-  evening; the morning peak, Saturday night and full scale only on July. At full scale on road times only 3 fleet
-  sizes, 3 strategies and 2 seeds were run (a run takes 1.5-3.5 hours); the complete grid is left to run in the
-  background (`--resume`).
+- **Road times and full scale on July only.** Every day of the four test months (M8d: 27 days) runs at 10% of
+  demand on calibrated straight-line times. Road times (OSRM) and full scale were run on July's days only, and at
+  full scale on road times only 3 fleet sizes, 3 strategies and 2 seeds (a run takes 1.5-3.5 hours); the complete
+  grid is left to run in the background (`--resume`).
 - **Single machine.** Kafka has one broker and no replication. The live stack is a demo, not a deployment.
 
 ## Decisions
@@ -300,6 +301,11 @@ running and surge priced by the separate pricing service (`--surge forecast --pr
   Mornings and evenings are different problems: evening riders compete for drivers (batching helps), morning
   commuter flows strand idle cars (batching slightly hurts, repositioning cuts cancellations by 7 pp). At full
   scale the optimal matcher beats greedy on throughput.
+- **Every day of the test months (M8d).** `experiments/run_m8d_days.sh` cuts a slice for every Wednesday evening
+  of October, January, April and July (19 days) plus a Wednesday morning and a Saturday night in each month, and
+  runs the batching, repositioning, ETA and surge experiments on each with that month's models.
+  `experiments/m8d_summary.py` treats days as the independent units (Student t over days). No effect reverses
+  on any evening; the sizes vary 2–5× between days of the same month.
 - **Reproducing M2–M7.** `--train 2024-03-01:2024-03-21 --test 2024-03-22:2024-03-31 --report m6` with
   `data/processed/calibration_2024-03.json` as the calibration, and the `M6_SLICE` day in `ridesync.data.slices`.
 

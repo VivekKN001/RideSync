@@ -642,3 +642,46 @@ are scarce, because demand, not supply, is the limit, and pricing it away costs 
 **Framing:** "Surge isn't a way to share out the drivers you have; it's a way to get more of them. With a fixed
 fleet it only prices riders out. When it pulls drivers online it's the best lever under scarcity (+8–11% trips,
 +33–67% driver earnings per hour). When drivers are already idle, moving them for free beats charging riders more."
+
+# M8d: every day of the test months, not one
+
+M8c tested each month on one Wednesday evening. Was that day typical? Now every Wednesday evening of October 2025,
+January, April and July 2026 (19 days, 17:00-20:00), plus a Wednesday morning (07:00-10:00) and a Saturday night
+(20:00-23:00) in each month, 27 days in all. Each day: that month's models and travel calibration, 10% of Manhattan
+trips, straight-line travel, 6 seeds, the M2/M7/ETA/M6b experiments (`experiments/run_m8d_days.sh`; on the new days
+the ETA experiment runs the learned ETA and its baselines at a 180 s tolerance only, since its world model makes a
+run ~2.5 min). Each effect is a per-day paired delta, then pooled with **days** as the units (Student t over days),
+so the interval now includes day-to-day variation, which the per-seed intervals of M8c could not.
+Full tables: `results/m8d_summary_report.md`, per day `results/m8d_per_day.csv`.
+
+**Every Wednesday evening** (trips/h in % of the baseline; mean ± 95% CI over days [lowest..highest day]):
+
+| effect | Oct (5) | Jan (4) | Apr (5) | Jul (5) | all 19 |
+|---|---|---|---|---|---|
+| batching vs instant, 300 drivers | +10.8 [+5.4..+13.2] | +5.0 [+2.6..+11.7] | +7.8 [+2.7..+9.8] | +6.0 [+2.8..+10.9] | **+7.5 ± 1.8**, 19/19 > 0 |
+| batching vs instant, 400 drivers | +3.0 | +0.9 | +1.6 | +1.0 | **+1.7 ± 0.6**, 19/19 |
+| repositioning vs none, 500 drivers | +1.8 | +2.3 | +2.4 | +2.5 | **+2.3 ± 0.2** [+1.4..+3.3], 19/19 |
+| learned ETA vs distance x hour table | +8.7 | +7.1 | +8.2 | +9.1 | **+8.3 ± 0.7** [+5.1..+10.1], 19/19 |
+| surge, fixed fleet, 300 drivers | −4.6 | −4.3 | −4.3 | −4.0 | **−4.3 ± 0.4**, 19/19 < 0 |
+| surge, drivers log on + chase, 300 | +10.5 | +4.1 | +9.1 | +7.6 | **+8.0 ± 1.7** [+2.3..+12.7], 19/19 |
+| … earnings per online driver-hour | +56 | +20 | +37 | +25 | **+36 ± 11** [+8..+84] |
+| repositioning vs surge (both), 500 | +1.0 | +1.6 | +1.7 | +1.8 | **+1.5 ± 0.3**, 19/19 |
+
+**Every conclusion survives.** No effect reverses on any of the 19 evenings (the one non-positive day is batching
+at 500 drivers, −0.0, where its gain is ~0 anyway). The mornings and Saturday nights of all four months repeat
+what M8b found for July: in the morning peak batching gives little (+2.3% at 300, ±0 at 400-500) while
+repositioning gives **+6.6% to +7.2%** and beats surge by +4.7%; on Saturday nights batching gives **+13%** at 300
+and the learned ETA **+12%**, the largest of any window.
+
+**But the sizes move a lot from day to day, more than between months.** Batching at 300 drivers ranges from +2.6%
+to +13.2% across evenings; within January, three Wednesdays gave about +3% and the 21st gave +11.7%. What sets it is
+how scarce drivers are that evening: across the 19 evenings the gain tracks the cancellation rate under instant
+dispatch (12% to 43%, a direct measure of scarcity) with a correlation of 0.97. That is M1's mechanism again,
+now on real days. Repositioning and
+the learned ETA are steadier (2-3× range). So M8c's per-month numbers were each a sample of one day: M8c reported
+January as the quiet month (+3%), but that was its day, not its month. The pooled numbers above are the ones to
+quote.
+
+**Framing:** "Tested on 27 days across a year, not one: no result flips, the effects that depend on scarcity
+(batching, surge with responsive drivers) vary 2-5× between ordinary Wednesdays, and the effects that fix a
+systematic error (honest ETAs, repositioning) are steady."

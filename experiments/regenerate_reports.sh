@@ -44,5 +44,7 @@ unset RIDESYNC_MODELS RIDESYNC_CALIBRATION
 run experiments/m6b_supply.py --slice $PM --tag m6b_supply_wed_pm
 run experiments/m6b_supply.py --slice $AM --tag m6b_supply_wed_am
 run experiments/m6b_supply.py --slice $SAT --tag m6b_supply_sat_night
+echo "== M8d: every day of the test months (its own script; RIDESYNC_NO_SIM is still set)"
+bash experiments/run_m8d_days.sh | grep FAILED && exit 1
 echo "== summaries"; unset RIDESYNC_NO_SIM
 python experiments/m8b_summary.py > /dev/null && python experiments/m8c_summary.py > /dev/null   && python experiments/m6b_summary.py > /dev/null && echo "all regenerated"

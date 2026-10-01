@@ -68,6 +68,8 @@ def main():
                     help="median lateness tolerances (s); turns on riders.enroute_cancel")
     ap.add_argument("--resume", action="store_true",
                     help="keep the runs already in the runs CSV, run only the missing ones, save each as it finishes")
+    ap.add_argument("--arms", nargs="+", default=None,
+                    help="only these arms (the baselines global_multiplier and dist_hour_table are always run)")
     args = ap.parse_args()
 
     model_path = MODEL_PATH.format(base=args.base)
@@ -99,6 +101,8 @@ def main():
         Arm("dist_hour_table", {"belief": replace(base_travel, eta_model=tables["dist_hour"])}),
         Arm("learned_eta", {"belief": replace(base_travel, eta_model=model_path)}),
     ]
+    if args.arms:
+        arms = [a for a in arms if a.label in ("global_multiplier", "dist_hour_table", *args.arms)]
     t0 = time.time()
     tag = args.tag or "m6_eta_sim"
     RESULTS.mkdir(exist_ok=True)
