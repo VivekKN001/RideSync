@@ -10,13 +10,13 @@ demand (NYC TLC, 31 months to July 2026) and road times (OSRM), live over Kafka 
 
 **[▶ Watch a recorded evening in your browser](https://vivekkn001.github.io/RideSync/)**: Wednesday 15 July 2026,
 17:00-20:00, 400 drivers, optimal matching every 30 s with idle drivers repositioned toward expected demand,
-nothing to install. Below, 18:00 at 80× (recorded before M10, so without the violet repositioning drivers):
+nothing to install. Below, 18:00 at 80× (recorded before repositioning ran live, so without the violet repositioning drivers):
 
 ![Live map: Manhattan on 15 July 2026, 400 drivers. Waiting riders pulse pink, drivers on the way to a pickup are amber with a line to the rider, drivers with a passenger are blue, and zones short of drivers glow orange](docs/img/live_map.webp)
 
 **Contents:** [The problem](#the-problem) · [What RideSync does](#what-ridesync-does) ·
 [Architecture](#architecture) · [Tech stack](#tech-stack) · [Quick start](#quick-start) · [Results](#results) ·
-[Limitations](#limitations) · [Deep dives](#decisions) · [Public demo](#public-demo-m9) · [Layout](#layout) ·
+[Limitations](#limitations) · [Deep dives](#decisions) · [Public demo](#public-demo) · [Layout](#layout) ·
 [Run everything](#run)
 
 ## The problem
@@ -74,9 +74,9 @@ results are reported alongside the positive ones.
 
 Offline and live build and solve batches with the same `ridesync.dispatch` code. A lockstep test shows that the
 live path, run with zero latency, gives results bit-identical to offline, so any difference between the modes is
-latency alone. The per-milestone diagrams are further down: [live mode](#live-mode-m3),
-[stream features](#stream-features-and-screens-m4-m5), [ML and surge](#demand-forecast-surge-pricing-eta-correction-m6),
-[repositioning](#repositioning-m7) and [repositioning and driver behaviour live](#live-repositioning-drivers-and-riders-who-decide-m10).
+latency alone. More detailed diagrams are further down: [live mode](#live-mode-over-kafka),
+[stream features](#stream-features-and-screens), [ML and surge](#demand-forecast-surge-pricing-eta-correction),
+[repositioning](#repositioning-idle-drivers) and [repositioning and driver behaviour live](#live-repositioning-drivers-and-riders-who-decide).
 
 ## Tech stack
 
@@ -120,41 +120,46 @@ caveats: [`experiments/FINDINGS.md`](experiments/FINDINGS.md).
 
 | Question | Answer |
 |---|---|
-| Does batching beat instant nearest-driver? (M1, M2, M8b, M8c) | Yes, under scarcity, on four test months across a year: 30 s batches with a cancellation-aware cost give **−4 pp cancellations, +5–6% trips/h** on real roads (300 drivers, March 2024 and July 2026), and **+11% trips/h** on July 2026 evening peaks with straight-line times. The gain follows how scarce drivers are that evening (+3% in a quiet January, +12% in October), disappears once supply is ample, and in the morning peak it doesn't help (on real roads it costs 2 pp more cancellations). |
-| Does optimal (Hungarian) beat greedy on a batch? (M1c, M2, M8b) | At the 10% sample, only per batch (better in 19–41% of batches; trips/h within noise, on straight-line and road times). **At full scale, yes**: batches hold 100–325 riders, greedy is worse in 86–93% of them, and optimal gives **+249 ± 28 trips/h and −2.2 pp cancellations** at 4,000 drivers; **+148 to +191 trips/h (−1.3 to −1.7 pp) on real roads**. |
-| What does going live cost? (M3, M10) | +1.4 to +4.2 s of rider wait at 10–60× speed and nothing else. At zero latency the live path is bit-identical to offline. Tick-to-batch takes 15–22 ms p50. With the matcher's repositioning plan and riders who give up on late drivers (M10), live at 10× matches offline within **+0.02 pp cancellations and +1.9 s wait**; all 2,723 moves sent over Kafka were applied. |
-| How long should the stream wait for late events? (M4) | 1 s cuts lost events 10×, down to 0.03%. The job waits 2 s, and nothing is silently dropped. |
-| Can we forecast demand? (M6, M8, M8c) | On July 2026, trained on 18 months: **17.8% WAPE** per zone per 15 min, against 22.4% for the best baseline; 19.0% at 60 min ahead. On October, January and April, each trained on the 12 months before: 16.4–17.3%, ahead of the best baseline every month. |
-| Does more (or newer) data help? (M8) | A little. Trained on 30 months instead of one: 18.2% → 17.7% WAPE, 220 → 212 s ETA error. Recency counts as much as 17× the volume, and a model trained on March 2024 still works two years later. |
-| How good is the ETA? (M6, M8c) | A learned correction with live traffic features: **24.0% MAPE**, against 40.8% for OSRM alone. That is at the limit of zone-level data (an oracle scores 22–29%). The 10–90% range covers 78% of trips. On four test months: 24.3–24.8% every month. |
-| Does an honest ETA matter? (M6, M8b) | When riders give up on late drivers, the learned ETA adds **+5% to +12% trips/h (+44 to +87)** over a simple distance × hour table (July 2026: +5% to +14%; **on road times +8% to +57%**), and +25% to +130% over one city-wide speed (tolerances of 5 to 2 min). |
-| Does surge help? (M6, M6b) | **Only if drivers respond.** With a fixed fleet it rations demand: fewer trips on every day tested. When a reserve of drivers logs on under surge, it adds **+60 to +90 trips/h (+8–11%)** on busy evenings with 300 drivers and lifts fares per online driver-hour from ~$62 to $81–103. Drivers who only chase surge add nothing. With slack, free repositioning beats surge on every day. The forecast doesn't beat current demand. |
-| Do the results hold on other days? (M8d) | **Yes, on every Wednesday evening of the four test months (19 days).** No effect reverses on any evening; the only non-positive day is batching at 500 drivers, where it is ±0.0 anyway. Over the 19: batching **+7.5 ± 1.8% trips/h** at 300 drivers, repositioning **+2.3 ± 0.2%** at 500, the learned ETA **+8.3 ± 0.7%**, surge with a fixed fleet **−4.3 ± 0.4%**, surge with drivers who respond **+8.0 ± 1.7%**. Mornings and Saturday nights repeat July's pattern in every month: in the morning peak batching gives little (+2% at 300 drivers, ±0 at 400–500) and repositioning **+6.6–7.2%**; on Saturday nights batching gives **+13%**. Sizes vary 2–5× between days of the same month, more than between months: in January three evenings gave +3% from batching and one +12%, so a single test day per month was a sample of one. |
-| Does moving idle drivers help? (M7, M8b) | With slack (500 drivers), coordinated repositioning **halves cancellations (6.9% → 3.5%), cuts pickups 37–43 s, +4% trips/h** for +1.3–1.9 pp empty driving. In the morning peak, where commuter flows strand idle cars, it's the biggest lever in the project: **−7.2 pp cancellations, +76 trips/h**. Uncoordinated drift to hot spots doesn't help. |
+| Does batching beat instant nearest-driver? | Yes, under scarcity, on four test months across a year: 30 s batches with a cancellation-aware cost give **−4 pp cancellations, +5–6% trips/h** on real roads (300 drivers, March 2024 and July 2026), and **+11% trips/h** on July 2026 evening peaks with straight-line times. The gain follows how scarce drivers are that evening (+3% in a quiet January, +12% in October), disappears once supply is ample, and in the morning peak it doesn't help (on real roads it costs 2 pp more cancellations). |
+| Does optimal (Hungarian) beat greedy on a batch? | At the 10% sample, only per batch (better in 19–41% of batches; trips/h within noise, on straight-line and road times). **At full scale, yes**: batches hold 100–325 riders, greedy is worse in 86–93% of them, and optimal gives **+249 ± 28 trips/h and −2.2 pp cancellations** at 4,000 drivers; **+148 to +191 trips/h (−1.3 to −1.7 pp) on real roads**. |
+| What does going live cost? | +1.4 to +4.2 s of rider wait at 10–60× speed and nothing else. At zero latency the live path is bit-identical to offline. Tick-to-batch takes 15–22 ms p50. With the matcher's repositioning plan and riders who give up on late drivers, live at 10× matches offline within **+0.02 pp cancellations and +1.9 s wait**; all 2,723 moves sent over Kafka were applied. |
+| How long should the stream wait for late events? | 1 s cuts lost events 10×, down to 0.03%. The job waits 2 s, and nothing is silently dropped. |
+| Can we forecast demand? | On July 2026, trained on 18 months: **17.8% WAPE** per zone per 15 min, against 22.4% for the best baseline; 19.0% at 60 min ahead. On October, January and April, each trained on the 12 months before: 16.4–17.3%, ahead of the best baseline every month. |
+| Does more (or newer) data help? | A little. Trained on 30 months instead of one: 18.2% → 17.7% WAPE, 220 → 212 s ETA error. Recency counts as much as 17× the volume, and a model trained on March 2024 still works two years later. |
+| How good is the ETA? | A learned correction with live traffic features: **24.0% MAPE**, against 40.8% for OSRM alone. That is at the limit of zone-level data (an oracle scores 22–29%). The 10–90% range covers 78% of trips. On four test months: 24.3–24.8% every month. |
+| Does an honest ETA matter? | When riders give up on late drivers, the learned ETA adds **+5% to +12% trips/h (+44 to +87)** over a simple distance × hour table (July 2026: +5% to +14%; **on road times +8% to +57%**), and +25% to +130% over one city-wide speed (tolerances of 5 to 2 min). |
+| Does surge help? | **Only if drivers respond.** With a fixed fleet it rations demand: fewer trips on every day tested. When a reserve of drivers logs on under surge, it adds **+60 to +90 trips/h (+8–11%)** on busy evenings with 300 drivers and lifts fares per online driver-hour from ~$62 to $81–103. Drivers who only chase surge add nothing. With slack, free repositioning beats surge on every day. The forecast doesn't beat current demand. |
+| Do the results hold on other days? | **Yes, on every Wednesday evening of the four test months (19 days).** No effect reverses on any evening; the only non-positive day is batching at 500 drivers, where it is ±0.0 anyway. Over the 19: batching **+7.5 ± 1.8% trips/h** at 300 drivers, repositioning **+2.3 ± 0.2%** at 500, the learned ETA **+8.3 ± 0.7%**, surge with a fixed fleet **−4.3 ± 0.4%**, surge with drivers who respond **+8.0 ± 1.7%**. Mornings and Saturday nights repeat July's pattern in every month: in the morning peak batching gives little (+2% at 300 drivers, ±0 at 400–500) and repositioning **+6.6–7.2%**; on Saturday nights batching gives **+13%**. Sizes vary 2–5× between days of the same month, more than between months: in January three evenings gave +3% from batching and one +12%, so a single test day per month was a sample of one. |
+| Does moving idle drivers help? | With slack (500 drivers), coordinated repositioning **halves cancellations (6.9% → 3.5%), cuts pickups 37–43 s, +4% trips/h** for +1.3–1.9 pp empty driving. In the morning peak, where commuter flows strand idle cars, it's the biggest lever in the project: **−7.2 pp cancellations, +76 trips/h**. Uncoordinated drift to hot spots doesn't help. |
 
 ## Status
 
-| Milestone | Scope | State |
+The project was built in stages, each one adding a piece and testing it before the next. The stage numbers only
+matter for finding files: the experiment scripts and result files carry them (`experiments/m7_reposition.py`,
+`experiments/results/m8b_*`).
+
+
+| Stage | What it added | State |
 |---|---|---|
-| M0 | Hungarian from scratch, greedy baselines, deterministic offline simulator, metrics | done |
-| M1 | Experiment: gain vs fleet density and batch window; cancellation-aware cost | done |
-| M2 | OSRM + NYC (Manhattan) road network + TLC demand replay | done |
-| M3 | Kafka + live simulator + matcher service | done: live mode below |
-| M4 | PyFlink job: driver state, windowed zone features, late events | done: stream features below |
-| M5 | Postgres sink, ClickHouse, Grafana, deck.gl live map | done: screens below |
-| M6 | ML: demand forecast, ETA correction (live traffic, ranges), fare fit, surge policy + elasticity | done |
+| M0 | The core: Hungarian algorithm from scratch, greedy baselines, deterministic offline simulator, metrics | done |
+| M1 | Batching experiments: gain vs fleet size and batch window; the cancellation-aware cost (M1b); why optimal ≈ greedy at small scale (M1c) | done |
+| M2 | Real city: NYC trip-record replay, Manhattan road network (OSRM) | done |
+| M3 | Live mode: Kafka, live simulator, matcher service | done: [live mode](#live-mode-over-kafka) |
+| M4 | Stream processing: PyFlink job for per-zone features and late events | done: [stream features](#stream-features-and-screens) |
+| M5 | Storage and screens: Postgres trip ledger, ClickHouse, Grafana, deck.gl live map | done: [screens](#stream-features-and-screens) |
+| M6 | Models: demand forecast, ETA correction (live traffic, ranges), fare fit, surge pricing with price-sensitive riders | done: [models](#demand-forecast-surge-pricing-eta-correction) |
 | M6b | Drivers who respond to surge: a reserve that logs on, idle drivers who chase prices | done: [findings](experiments/FINDINGS.md) |
-| M7 | Idle-driver repositioning: drift baseline vs coordinated plan | done |
-| M8 | 31 months of TLC data (2024-01..2026-07), models tested on July 2026, experiments on 3 more days and at full scale; M8c: three more test months; M8d: every Wednesday evening of the four, plus a morning and a Saturday night each | done: recent data below |
-| M9 | Free public demo: replay on GitHub Pages, in-process demo mode, sharing over a tunnel, locked-down stack | done: public demo below |
-| M10 | Repositioning, drivers logging on and off, and en-route cancellation in live mode | done: live behaviour below |
+| M7 | Repositioning idle drivers: drifting on their own vs a coordinated plan | done: [repositioning](#repositioning-idle-drivers) |
+| M8 | Recent data: 31 months of trips (2024-01..2026-07), models tested on July 2026; more days and full scale (M8b); three more test months (M8c); every Wednesday evening of the four, plus a morning and a Saturday night each (M8d) | done: [recent data](#recent-data-and-more-days) |
+| M9 | Free public demo: replay on GitHub Pages, in-process demo mode, sharing over a tunnel, locked-down stack | done: [public demo](#public-demo) |
+| M10 | Repositioning, drivers logging on and off, and riders cancelling on late drivers, all in live mode | done: [live behaviour](#live-repositioning-drivers-and-riders-who-decide) |
 
 ## Limitations
 
 - **Rider and driver behaviour are assumed, not measured.** No public data exists for patience, ETA tolerance,
   price elasticity or how drivers respond to surge, so the experiments vary them instead of claiming one true value.
 - **Zone-level data.** TLC records zones, not coordinates, so trip ends are sampled inside zone polygons. That puts
-  a floor under ETA accuracy, and the M6 report measures it.
+  a floor under ETA accuracy, and the ETA model's report measures it.
 - **Road times and full scale on July only.** Every day of the four test months (M8d: 27 days) runs at 10% of
   demand on calibrated straight-line times. Road times (OSRM) and full scale were run on July's days only, and at
   full scale on road times only 3 fleet sizes, 3 strategies and 2 seeds (a run takes 1.5-3.5 hours); the complete
@@ -173,7 +178,7 @@ caveats: [`experiments/FINDINGS.md`](experiments/FINDINGS.md).
 - **Two modes, one matcher:** offline (seeded, faster than real time) for experiments; live
   (Kafka/Flink) for the demo. Both build and solve batches with `ridesync.dispatch`.
 
-## Live mode (M3)
+## Live mode over Kafka
 
 ```
  live simulator (world, authoritative)                 matcher service (proposes)
@@ -181,7 +186,7 @@ caveats: [`experiments/FINDINGS.md`](experiments/FINDINGS.md).
                                                 ──► driver-events  ──► from events; every interval_s of
  applies or rejects each offer ◄── dispatch-offers ◄──────────────     event time: ETA matrix → strategy
                                ──► offer-responses ─────────────────►  → offers
-                                                    dispatch-batches ◄ (batch stats, for M5)
+                                                    dispatch-batches ◄ (batch stats, for the dashboards)
 ```
 
 - **Event time, per-partition watermarks.** The simulator writes a `tick` to every partition of the world topics
@@ -197,7 +202,7 @@ caveats: [`experiments/FINDINGS.md`](experiments/FINDINGS.md).
   Its results are bit-identical to the offline simulator (tested with 1 and 3 partitions and with reordered
   delivery), so any live-vs-offline difference is latency alone.
 
-## Stream features and screens (M4, M5)
+## Stream features and screens
 
 ```
  Kafka world topics ──► Flink (ridesync.stream) ──► zone-features  (per zone, per simulated minute)
@@ -224,9 +229,9 @@ and stays upright on phones. Free drivers are faint grey dots; drivers with a pa
 a short tail showing their direction; drivers on the way to a pickup are amber, with a line to the rider. Waiting
 riders pulse, pink turning red as the wait nears their patience. A green ripple marks a match and a red cross a
 cancellation. Zones glow orange when requests outnumbered free drivers in the last closed minute (from Flink).
-Since M10, drivers repositioning toward expected demand are violet, with a line to where they are going.
+Drivers repositioning toward expected demand are violet, with a line to where they are going.
 Each layer can be hidden from the legend. (This screenshot came from an in-memory run without Kafka or Flink,
-with the per-zone counts computed in-process: since M9 that is `python -m ridesync.web --demo`.)
+with the per-zone counts computed in-process: that is `python -m ridesync.web --demo`.)
 
 ![Live map](docs/img/live_map.png)
 
@@ -236,7 +241,7 @@ running and surge priced by the separate pricing service (`--surge forecast --pr
 
 ![Grafana dashboard](docs/img/grafana.png)
 
-## Demand forecast, surge pricing, ETA correction (M6)
+## Demand forecast, surge pricing, ETA correction
 
 ```
  TLC months ────► ridesync.ml.train ──► demand.joblib   zone x 15 min, gradient-boosted trees (Poisson), 15/30/60 min ahead
@@ -254,7 +259,7 @@ running and surge priced by the separate pricing service (`--surge forecast --pr
 - **Surge pressure is pooled over 2 km.** Per zone, a 10% slice has a few riders and 0–1 free drivers, so
   unpooled pressure is noise and surged about half of all trips even with a third of the fleet idle.
 - **Surge with a fixed fleet only rations.** No drivers come when prices rise, so surge trades
-  trips for fewer cancellations and more revenue per trip. M6b adds drivers who respond (`SimConfig.supply`):
+  trips for fewer cancellations and more revenue per trip. A later stage added drivers who respond (`SimConfig.supply`):
   a reserve that logs on as its area surges, and idle drivers who chase higher prices. Off by default. The question it can answer: do forecast-driven prices beat
   prices from current counts? Elasticity has no public data, so it's an assumption and the experiment varies it.
   All riders' price draws are seeded per rider, so arms stay paired. With surge off the simulator is unchanged (tested).
@@ -271,7 +276,7 @@ running and surge priced by the separate pricing service (`--surge forecast --pr
   takes prices from `ridesync.live.pricing`, which reads Flink's zone features (app opens, free drivers, waiting)
   and publishes `zone-prices`. Grafana shows the multiplier, expected vs actual demand and the surging zones.
 
-## Repositioning (M7)
+## Repositioning idle drivers
 
 ```
  every 5 min ──► idle >= 2 min? ──► drift:   nearest usually-busy zone (historical demand, training days)
@@ -284,11 +289,11 @@ running and surge priced by the separate pricing service (`--surge forecast --pr
   of at most 10 minutes, so the comparison is about *where* drivers go, not how much they move.
 - **Drift is the baseline to beat.** Drivers who never move is a pessimistic baseline. Real drivers drift toward
   hot spots on their own, so `drift` models that.
-- **Tested on unseen days.** The M7 experiment runs on 2026-07-22, and M8b adds three more days, all in the
-  demand model's test month (it was 2024-03-27 before M8).
-- **Live too (M10).** The matcher plans the moves in live mode; see below.
+- **Tested on unseen days.** The repositioning experiment runs on 2026-07-22, plus three more days, all in the
+  demand model's test month (before the move to recent data it ran on 2024-03-27).
+- **Live too.** The matcher plans the moves in live mode; see [below](#live-repositioning-drivers-and-riders-who-decide).
 
-## Recent data and more days (M8)
+## Recent data and more days
 
 ```
  TLC Jan 2024 .. Jul 2026 (31 x ~0.5 GB, RIDESYNC_TLC_DIR) ──► ridesync.data.monthly ──► data/monthly/<month>/
@@ -306,15 +311,15 @@ running and surge priced by the separate pricing service (`--surge forecast --pr
   Mornings and evenings are different problems: evening riders compete for drivers (batching helps), morning
   commuter flows strand idle cars (batching slightly hurts, repositioning cuts cancellations by 7 pp). At full
   scale the optimal matcher beats greedy on throughput.
-- **Every day of the test months (M8d).** `experiments/run_m8d_days.sh` cuts a slice for every Wednesday evening
+- **Every day of the test months.** `experiments/run_m8d_days.sh` cuts a slice for every Wednesday evening
   of October, January, April and July (19 days) plus a Wednesday morning and a Saturday night in each month, and
   runs the batching, repositioning, ETA and surge experiments on each with that month's models.
   `experiments/m8d_summary.py` treats days as the independent units (Student t over days). No effect reverses
   on any evening; the sizes vary 2–5× between days of the same month.
-- **Reproducing M2–M7.** `--train 2024-03-01:2024-03-21 --test 2024-03-22:2024-03-31 --report m6` with
+- **Reproducing the March 2024 results.** `--train 2024-03-01:2024-03-21 --test 2024-03-22:2024-03-31 --report m6` with
   `data/processed/calibration_2024-03.json` as the calibration, and the `M6_SLICE` day in `ridesync.data.slices`.
 
-## Public demo (M9)
+## Public demo
 
 Three ways to show the system, all free:
 
@@ -346,7 +351,7 @@ so the datasources connect as read-only users:
 `share` refuses to expose Grafana while the admin password is the example one or anonymous visitors can edit.
 Flink's UI stays local, because it can submit jobs.
 
-## Live repositioning, drivers and riders who decide (M10)
+## Live repositioning, drivers and riders who decide
 
 ```
  matcher (the platform)                                   live simulator (the world)
@@ -355,7 +360,7 @@ Flink's UI stays local, because it can submit jobs.
    ▲ driver-events: status + leg of a repositioning driver (path, timing, target zone), time in state
    └ rider-events: app opens (demand estimate), cancellations, incl. riders giving up on a late driver
                                                           drivers' own decisions stay here, as offline:
-                                                          drift to busy zones, log on/off, chase surge (M6b)
+                                                          drift to busy zones, log on/off, chase surge
 ```
 
 - **Who decides what.** The coordinated plan is the platform's, so the matcher makes it, from the state it already
@@ -394,9 +399,9 @@ ridesync/live/       schema (topics, messages), bus (in-memory) + kafka_bus, wor
 ridesync/stream/     zones (point -> taxi zone, dependency-free), features (zone features + reference runner),
                      job (PyFlink wiring)
 ridesync/sinks/      postgres (trip ledger)
-ridesync/ml/         M6 models: demand (forecast), fare (fit), eta (correction + noisy world), train (CLI)
+ridesync/ml/         models: demand (forecast), fare (fit), eta (correction + noisy world), train (CLI)
 ridesync/pricing.py  surge policy, rider conversion, demand estimates (shared by the simulator and live pricing)
-ridesync/reposition.py  M7 policies: drift to usual hot spots, planned rebalancing (plan_round: offline
+ridesync/reposition.py  repositioning policies: drift to usual hot spots, planned rebalancing (plan_round: offline
                         engine and live matcher)
 ridesync/live/pricing.py  live pricing service: zone-features -> zone-prices
 ridesync/web/        live map server (FastAPI + WebSocket) and page; demo (in-process run), record (static
@@ -412,7 +417,7 @@ ridesync/data/       downloads; TLC high-volume FHV trips -> demand slices with 
 ridesync/experiments.py   parallel grid runner + paired comparisons
 experiments/         experiment scripts and results
 tests/               Hungarian vs brute force / scipy, strategy validity, simulator invariants,
-                     live == offline in lockstep (M10: with repositioning, supply response, late cancels),
+                     live == offline in lockstep (also with repositioning, driver supply response, late cancels),
                      matcher restart, Kafka end to end (when a broker is up),
                      zone features vs simulator totals, trip ledger against real Postgres (when it is up)
 ```
@@ -426,7 +431,7 @@ riders (fairness). The optimal solve pads the matrix with one "stay unmatched" c
 ## Assumptions the metrics depend on (see `ridesync/sim/config.py`)
 
 - Riders cancel if unmatched after a lognormal patience (median 5 min), or right away if the quoted ETA
-  exceeds a lognormal tolerance (median 10 min). With `riders.enroute_cancel` (M6 ETA and M7 experiments), a
+  exceeds a lognormal tolerance (median 10 min). With `riders.enroute_cancel` (the ETA and repositioning experiments), a
   rider whose driver isn't there by the quote plus a lognormal tolerance (median 3 min) cancels too; the
   driver stops where it is. No public data exists for any of these, so experiments vary them.
 - Drivers accept 95% of offers; a declined (rider, driver) pair is never offered again.
@@ -456,48 +461,48 @@ python -m venv .venv && .venv\Scripts\activate
 pip install -e ".[dev,live,web]" pandas pyarrow geopandas requests
 pytest
 
-# M0/M1: synthetic city, no external data
+# Batching experiments on a synthetic city, no external data
 python experiments/m1_batching.py
 python experiments/m1b_cancel_aware.py
 python experiments/m1c_batch_gap.py
 
-# M2: real Manhattan demand (since M8: Wednesday 15 July 2026, 17:00-20:00)
+# Real Manhattan demand (the default day: Wednesday 15 July 2026, 17:00-20:00)
 # Monthly TLC files are ~0.5 GB; RIDESYNC_TLC_DIR (environment or .env) puts them on another disk (default data/raw).
 python -m ridesync.data.fetch --tlc 2026-07 --osm            # TLC trips + zones, NYC OSM extract
 python -m ridesync.data.tlc --date 2026-07-15 --start 17:00 --hours 3 --boroughs Manhattan --sample-frac 0.1
 python -m ridesync.routing.calibrate --slice data/processed/trips_2026-07-15_1700_3h_manhattan_f0.1.parquet
 python experiments/m2_real_demand.py --travel straight
 
-# M2 with the road network (Docker)
+# The same with the road network (Docker)
 docker compose --profile prep run --rm osrm-prep             # one-off, ~5 min
 docker compose --profile routing up -d osrm
 python -m ridesync.routing.calibrate --slice data/processed/trips_2026-07-15_1700_3h_manhattan_f0.1.parquet --osrm http://localhost:5000
 python experiments/m2_real_demand.py --travel osrm
 
-# M3: live mode over Kafka
+# Live mode over Kafka
 docker compose up -d kafka
 python -m ridesync.live.matcher                              # terminal 1: runs until Ctrl+C
 python -m ridesync.live.sim --speed 10 --compare-offline     # terminal 2: 3 h of demand in ~18 min
-#   M10 on by default: the matcher's repositioning plan and riders who give up on late drivers;
+#   On by default: the matcher's repositioning plan and riders who give up on late drivers;
 #   --reposition none|drift|planned, --no-late-cancel; with --surge, --no-supply turns off the driver response
 python experiments/m3_live_vs_offline.py                     # offline vs lockstep vs live at 10x/30x/60x
 
-# M4: stream features (Flink UI on http://localhost:8081)
+# Stream features (Flink UI on http://localhost:8081)
 docker build -t ridesync-flink:1.20 docker/flink             # once
 python -m ridesync.stream.zones                              # once: data/processed/taxi_zones.json
 docker compose --profile stream up -d                        # Flink jobmanager + taskmanager
 docker compose --profile stream run --rm flink-submit         # add --lateness-ms 5000 etc. to change the job
 python experiments/m4_lateness.py                            # watermark allowance vs late events
 
-# M6/M8: models. 31 months of TLC data, reduced to ~8 MB each, then train on 2025-01..2026-06, test on 2026-07
+# Models: 31 months of TLC data, reduced to ~8 MB each, then train on 2025-01..2026-06, test on 2026-07
 pip install -e ".[ml]"
 python -m ridesync.data.fetch --tlc 2024-01:2026-07          # ~15 GB
 python -m ridesync.data.monthly 2024-01:2026-07              # ~15 s a month -> data/monthly/<month>/
 python -m ridesync.ml.train demand                           # ~3 min
 python -m ridesync.ml.train fare                             # ~1 min
 python -m ridesync.ml.train eta --base straight              # ~3 min
-python experiments/m8_compare.py                             # M8: which training period predicts July 2026 best
-# The M6 models (March 2024): --train 2024-03-01:2024-03-21 --test 2024-03-22:2024-03-31 --report m6,
+python experiments/m8_compare.py                             # which training period predicts July 2026 best
+# The original March 2024 models: --train 2024-03-01:2024-03-21 --test 2024-03-22:2024-03-31 --report m6,
 # with data/processed/calibration_2024-03.json copied over calibration.json.
 python experiments/m6_surge.py                               # no surge vs reactive vs forecast, 3 fleets x 3 elasticities
 python experiments/m6_eta_sim.py                             # matcher belief: global multiplier vs learned ETA
@@ -506,11 +511,11 @@ docker compose --profile routing up -d osrm                  # optional: the sam
 python -m ridesync.ml.train eta --base osrm
 python experiments/m6_eta_sim.py --base osrm
 
-# M7: repositioning (needs the demand model; runs on a test day of it)
+# Repositioning (needs the demand model; runs on a test day of it)
 python -m ridesync.data.tlc --date 2026-07-22
 python experiments/m7_reposition.py --workers 4              # none vs drift vs planned (reactive / forecast)
 
-# M8b: the experiments on more days (all in the test month) and at full scale; --tag names the result files
+# The experiments on more days (all in the test month) and at full scale; --tag names the result files
 python -m ridesync.data.tlc --date 2026-07-15 --start 07:00  # also: --date 2026-07-18 --start 20:00, --sample-frac 1
 python experiments/m2_real_demand.py --slice data/processed/trips_2026-07-15_0700_3h_manhattan_f0.1.parquet --tag m8b_m2_wed_am
 python experiments/m6_surge.py --slice data/processed/trips_2026-07-15_0700_3h_manhattan_f0.1.parquet --tag m8b_surge_wed_am
@@ -525,18 +530,18 @@ python experiments/m6_eta_sim.py --base osrm --tag m8b_eta_sim --late-tolerance 
 python experiments/m8b_summary.py
 bash experiments/regenerate_reports.sh                       # rebuild every report from the saved runs, no simulation
 
-# M6 live: surge on the live map and dashboards
+# Surge pricing on the live map and dashboards
 python -m ridesync.live.sim --speed 20 --surge forecast                  # the simulator prices zones itself
 python -m ridesync.live.pricing                                          # or: a separate pricing service (needs Flink)
 python -m ridesync.live.sim --speed 20 --surge forecast --price-service
 
-# M5: storage and screens (passwords from .env: copy .env.example first)
+# Storage and screens (passwords from .env: copy .env.example first)
 docker compose --profile storage up -d                       # Grafana on http://localhost:3000 (admin: see .env)
-# existing ClickHouse volume from before M6 (init scripts run only once):
+# a ClickHouse volume created by an older version (init scripts run only once):
 docker compose exec -T clickhouse clickhouse-client --multiquery < docker/clickhouse/init/02_m6.sql
-# ... and from before M10 (repositioning moves):
+# ... and the table for repositioning moves:
 docker compose exec -T clickhouse clickhouse-client --multiquery < docker/clickhouse/init/03_m10.sql
-# existing volumes from before M9: set the new passwords and create Grafana's read-only Postgres role
+# after changing .env, or with volumes from an older version: set the passwords, create Grafana's read-only role
 docker compose --profile storage exec postgres sh /docker-entrypoint-initdb.d/02_roles.sh
 docker compose --profile storage exec grafana grafana cli admin reset-admin-password <GRAFANA_ADMIN_PASSWORD>
 python -m ridesync.sinks.postgres                            # terminal: trip ledger
@@ -544,7 +549,7 @@ python -m ridesync.web                                       # terminal: live ma
 python -m ridesync.live.matcher                              # terminal
 python -m ridesync.live.sim --speed 20                       # then watch the map and dashboards
 
-# M9: public demo
+# Public demo
 python -m ridesync.web --demo                                # live map without Docker, http://localhost:8000
 python -m ridesync.web.record                                # re-record docs/demo (commit it; Pages publishes it)
 python -m ridesync.web.share --demo                          # public link to the demo (needs cloudflared)

@@ -1,9 +1,29 @@
-# Findings so far (synthetic city, straight-line travel times)
+# RideSync findings
+
+The experiments in the order they were run, each section building on the ones before. Every number is a paired
+comparison over seeded runs (same riders, same random draws), mean ± 95% CI. The result files in `results/` are
+named by the project stage that produced them:
+
+| section | result files |
+|---|---|
+| Synthetic city: batching, the cost, optimal vs greedy | `m1_*`, `m1b_*`, `m1c_*` |
+| Real Manhattan demand and road times | `m2_*` |
+| Live over Kafka vs offline | `m3_*` |
+| Stream features and late events | `m4_*` |
+| Demand forecast, surge pricing, ETA correction | `m6_*` |
+| Moving idle drivers toward demand | `m7_*` |
+| 31 months of data, more days, full scale | `m8_*`, `m8b_*` |
+| Four test months | `m8c_*` |
+| Surge when drivers respond | `m6b_*` |
+| Every day of the test months | `m8d_*` |
+| Repositioning and driver behaviour live over Kafka | `m10_*` |
+
+# Synthetic city: batching, the cost, optimal vs greedy (straight-line travel times)
 
 Setup: Manhattan-shaped synthetic city, 1,200 requests/h, fleets of 250–450 drivers, 8 paired seeds per arm.
 Full tables: `results/m1_report.md`, `results/m1b_report.md`, `results/m1c_report.md`.
 
-## 1. Batching is the big lever, and only under scarcity (M1)
+## 1. Batching is the big lever, and only under scarcity
 
 | Fleet | Batching vs immediate nearest-driver |
 |---|---|
@@ -14,7 +34,7 @@ Full tables: `results/m1_report.md`, `results/m1b_report.md`, `results/m1c_repor
 Immediate greedy fails under scarcity because a freed driver goes to the *oldest* waiting rider no matter how far
 away they are. Long pickups follow, and then cancellations on the quoted ETA.
 
-## 2. The objective matters more than the solver (M1b)
+## 2. The objective matters more than the solver
 
 A cancellation-aware edge cost (`e + V·P(cancel | e)`, and only match when that beats waiting) gives e.g. at
 300 drivers, 10 s window: cancellations 21.3% → 17.5%, trips/h 931 → 976. **Greedy with the same cost gets
@@ -24,7 +44,7 @@ setting.
 Belief sensitivity: overestimating cancellation (pessimistic belief) did as well or slightly better than the true
 belief; underestimating it (optimistic) lost most of the gain. When the model is uncertain, lean pessimistic.
 
-## 3. Why optimal ≈ greedy here (M1c)
+## 3. Why optimal ≈ greedy here
 
 Solving each batch with both, the optimal assignment beats cheapest-edge-first greedy by only 4–14 s of total
 pickup time per batch, and it's strictly better in only 5–16% of batches. By contrast it beats FIFO
@@ -33,9 +53,9 @@ from greedy itself.
 
 Likely cause: straight-line distance with a uniform speed is a nearly Euclidean metric, and cheapest-edge-first
 greedy is known to be near-optimal on such instances.
-**Hypothesis for M2:** a real road network (one-way streets, bridges, the river edges, park transverses) breaks
+**Hypothesis for the real city:** a real road network (one-way streets, bridges, the river edges, park transverses) breaks
 that geometry and creates more conflicts inside a batch. That is where the optimal solver should start to pay off.
-We'll rerun M1b/M1c on OSRM times with real TLC demand to test it.
+We'll rerun the cost and solver comparisons on OSRM times with real TLC demand to test it.
 
 ## Honest framing for the project
 
@@ -45,7 +65,7 @@ assumed.
 
 ---
 
-# M2 — real Manhattan demand (TLC replay), calibrated straight-line times
+# Real Manhattan demand (TLC replay), calibrated straight-line times
 
 Demand: Uber/Lyft requests from Manhattan to Manhattan, Wed 2024-03-13 17:00–20:00, 10% sample
 (~1,110 requests/h in the slice, ~11,100/h real). Travel: straight-line fitted to observed trip times
@@ -68,7 +88,7 @@ With 30 s batches, greedy's batch solution is strictly worse in 27–44% of batc
 each. That's a real edge, but small (≈0.3–0.6% more trips). The large effects still come from batching and the
 cancellation-aware objective (e.g. 300 drivers: −6 pp cancellations, +69 trips/h vs immediate greedy).
 
-## M2 on OSRM road times
+## The same on OSRM road times
 
 Same demand, seeds and arms, with travel times from OSRM on the NYC road network × 2.09 (fitted so OSRM matches
 observed TLC trip times). Full tables: `results/m2_osrm_report.md`.
@@ -97,9 +117,9 @@ predictability per batch, not throughput.
 
 ---
 
-# M3: live over Kafka vs offline
+# Live over Kafka vs offline
 
-`experiments/m3_live_vs_offline.py`, `results/m3_straight_report.md`. Same config as M2 (3 h Manhattan slice, 500
+`experiments/m3_live_vs_offline.py`, `results/m3_straight_report.md`. Same config as the real-demand runs (3 h Manhattan slice, 500
 drivers, optimal every 30 s, cancellation-aware cost, straight-line travel), 2 seeds, deltas paired per seed.
 The simulator and a separate matcher process talk over Kafka, paced at N simulated seconds per wall second, so a
 wall-clock delay of d costs d × N simulated seconds. Higher speeds magnify latency. A real deployment runs at 1×.
@@ -125,7 +145,7 @@ deployment should match the offline numbers.
 
 ---
 
-# M4: stream features (PyFlink) and late events
+# Stream features (PyFlink) and late events
 
 The Flink job (`ridesync/stream/job.py`) turns `rider-events` + `driver-events` into per-zone, per-minute features
 (requests, matches, cancellations, completed trips, free drivers, average wait and pickup ETA) on
@@ -153,7 +173,7 @@ are worse than this model. Nothing is silently dropped either way: the rest land
 
 ---
 
-# M6: demand forecast, surge pricing, ETA correction
+# Demand forecast, surge pricing, ETA correction
 
 Models are trained on TLC March 2024 (Manhattan): days 1–21 for training, days 22–31 for testing. Reports:
 `results/m6_demand_report.md`, `m6_fare_report.md`, `m6_eta_straight_report.md`, `m6_surge_report.md`,
@@ -233,7 +253,7 @@ The slice (March 13) falls inside the forecast's training days. That should flat
 isn't why the forecast failed to win. The same comparison on a test day (Wed March 27, 17:00–20:00, ε 0.5, 6
 seeds) gives the same answer: forecast − reactive is within noise at 300/400/500 drivers (≤ 0.25 pp cancel,
 ≤ 1.5 trips/h), and revenue is $140–526/h lower. The forecast would
-matter for a slower lever, such as moving drivers ahead of demand (M7).
+matter for a slower lever, such as moving drivers ahead of demand (next section but one).
 
 ## ETA correction (6c)
 
@@ -340,7 +360,7 @@ depends on a driver-supply response, which is out of scope."
 
 ---
 
-# M7: moving idle drivers toward demand
+# Moving idle drivers toward demand
 
 `experiments/m7_reposition.py`, `results/m7_reposition_report.md`. Demand is Wed 2024-03-27, 17:00–20:00, a
 test day, so neither the forecast nor drift's "usual" map has seen it. Dispatch is optimal @30 s,
@@ -354,7 +374,7 @@ up on late drivers (median tolerance 3 min). Every 5 minutes a policy may move d
   weekday and time), with no coordination. This is what drivers do on their own, and it's the fair baseline.
 - `planned`: the platform shares the free drivers out in proportion to expected demand and fills the
   shortfalls from surplus zones by minimum total drive time. Demand is `reactive` (last 15 min) or
-  `forecast` (M6 model).
+  `forecast` (the demand model).
 
 | drivers | arm | Δ cancel pp | Δ wait_all s | Δ trips/h | Δ empty driving pp | reposition km/h | moves/driver-h |
 |---|---|---|---|---|---|---|---|
@@ -372,7 +392,7 @@ All deltas are against `none`. At 500 drivers `none` cancels 6.9% of requests wi
 3.2–3.5% and pickups by 37–43 s, for +4% trips/h. At 400 the gain is +1%. At 300 there's nothing to move:
 drivers are never idle for 2 minutes, so the policy almost never fires. This is the opposite of what we
 expected before the run (biggest gain under scarcity). Repositioning can't create drivers; it can only put
-idle ones in better places, so it needs idle drivers to work with. It complements the M1/M2 result, where
+idle ones in better places, so it needs idle drivers to work with. It complements the batching result, where
 batching helped most under scarcity.
 
 **The cost is visible and small.** Empty driving (to pickups and repositioning) rises by 1.3–1.9 pp of driver
@@ -402,7 +422,7 @@ has slack, for +1.3–1.9 pp of empty driving. Uncoordinated drifting to known h
 staying put. It does nothing when the fleet is already fully busy."
 
 
-# M8: 31 months of data, tested on July 2026
+# 31 months of data, tested on July 2026
 
 TLC high-volume trips from January 2024 to July 2026 (31 months, 15 GB), each month reduced to ~8 MB: zone
 counts per 15 minutes, a 3,000-a-day trip sample with live-traffic features, a fare sample and exact fee sums
@@ -413,7 +433,7 @@ and are tested on July 2026. The simulator's straight-line speed was recalibrate
 
 ## The models on July 2026
 
-| model | M6 (tested on March 2024) | M8 (tested on July 2026) |
+| model | first models (tested on March 2024) | recent-data models (tested on July 2026) |
 |---|---|---|
 | Demand, 15 min ahead (WAPE) | 16.9% vs 21.4% best baseline | **17.8%** vs 22.4% best baseline |
 | Demand, 60 min ahead | 18.8% vs 22.4% | **19.0%** vs 22.4% |
@@ -447,12 +467,12 @@ Adding the year before congestion pricing neither helps nor hurts. The reason is
 is still within 0.4-0.7 pp two years later.** For this problem, retraining monthly on recent data matters more
 than hoarding history.
 
-## The experiments on more days (M8b)
+## The experiments on more days
 
-Same code and settings as M2, M6 and M7, on three days of the test month: Wednesday 15 July 17-20 (the new
+Same code and settings as the real-demand, model and repositioning experiments, on three days of the test month: Wednesday 15 July 17-20 (the new
 default), the same Wednesday 07-10, and Saturday 18 July 20-23.
 
-**Evening peaks repeat M2.** Batching with the cancellation-aware cost against instant nearest-driver, 300
+**Evening peaks repeat the March 2024 result.** Batching with the cancellation-aware cost against instant nearest-driver, 300
 drivers: -7.3 pp cancellations and +82 trips/h (+10.9%) on Wednesday evening, -7.3 pp and +86 trips/h (+11.4%) on
 Saturday night, against -6.5 pp and +74 (+9.1%) on March 2024. The gain shrinks as the fleet grows, as before.
 
@@ -463,13 +483,13 @@ commuters flow one way, and 30% of morning trips leave zones that receive fewer 
 evening). Batching can't fix geography. From 350 drivers up it *raises* cancellations by 0.5-1.0 pp: the wait
 for a batch costs more than a better assignment saves, because few riders compete for the same driver.
 
-**Repositioning is the lever for the morning.** Moving idle drivers to forecast demand (M7's `planned_forecast`)
+**Repositioning is the lever for the morning.** Moving idle drivers to forecast demand (the `planned_forecast` policy)
 at 500 drivers: **-7.2 pp cancellations, +76 trips/h, -45 s pickups** for +3.2 pp empty driving in the morning,
 the largest effect in the project. At 400 drivers -5.6 pp and +59 trips/h. In the evening it gives -2.7 pp and
 +30 trips/h at 500 (March 2024: -3.5 pp, +41), and on Saturday night -1.9 pp and +22. Drifting to the usual hot
-spots stays useless everywhere. Under scarcity (300 drivers) nobody is idle long enough to move, as in M7.
+spots stays useless everywhere. Under scarcity (300 drivers) nobody is idle long enough to move, as in the first repositioning runs.
 
-**Road times repeat M2's road-time result.** Wednesday evening on OSRM (× 2.26, recalibrated on 15 July 2026),
+**Road times repeat the March 2024 road-time result.** Wednesday evening on OSRM (× 2.26, recalibrated on 15 July 2026),
 4 seeds: at 300 drivers batching with the cancellation-aware cost gives **-4.0 pp cancellations and +45 trips/h
 (+6.1%)**, against -3.8 pp and +5.4% on March 2024 roads and -7.3 pp and +10.9% on July straight-line times. Real
 pickups are longer (412 s instant at 300 drivers), so batching saves a smaller share. From 400 drivers it is within
@@ -501,7 +521,7 @@ trips/h (+57% / +31% / +8%)** and -20.4 / -14.1 / -4.9 pp cancellations at toler
 +377 / +288 / +113 trips/h against one city-wide multiplier. Road-based quotes without the correction are further off
 (|error| 81-145 s for the table against 64-78 s for the learned ETA), so riders who give up on late drivers punish
 them harder. Without late-driver cancellations the learned ETA *loses* 67 trips/h against the table, the same artifact
-as in M6: the table quotes 194 s too early on average, which costs nothing when riders can't cancel on a late driver,
+as before: the table quotes 194 s too early on average, which costs nothing when riders can't cancel on a late driver,
 while an honest quote makes some riders decline a long wait.
 Tables: `results/m8b_eta_sim_osrm{,_late}_report.md`.
 
@@ -511,12 +531,12 @@ stays within noise of the reactive one. Nothing changes with a fixed fleet.
 
 ## Full scale: optimal matching finally pays
 
-Wednesday evening with every trip (33,313 requests) and fleets of 3,000-5,000 drivers, 3 seeds. The M2 pattern
+Wednesday evening with every trip (33,313 requests) and fleets of 3,000-5,000 drivers, 3 seeds. The 10% pattern
 holds and is stronger: batching with the cancellation-aware cost gives -10.7 pp cancellations and **+15% trips/h**
 at 3,000 drivers (+11% at the 10% scale). At the same driver-to-rider ratio, full scale cancels less (4.4% vs
 7.0% at 4,500 vs 450 instant): density shortens pickups.
 
-**The M1c/M2 conclusion "optimal ≈ greedy on throughput" was an artifact of the 10% sample.** At 10%, a batch
+**The earlier conclusion "optimal ≈ greedy on throughput" was an artifact of the 10% sample.** At 10%, a batch
 holds 12-36 riders and greedy loses to optimal in 30% of batches. At full scale a batch holds 100-325 riders,
 greedy is worse in 86-91% of them, and it shows in the outcome. Optimal against cheapest-edge greedy on the same
 30 s batches and cost, paired:
@@ -556,7 +576,7 @@ leave idle cars in the wrong places, batching slightly hurts, and forecast-drive
 
 ---
 
-# M8c: four test months, not one
+# Four test months, not one
 
 The same models and experiments on three more months, one per season: Wednesday 15 October 2025, 14 January
 2026 and 15 April 2026, 17:00-20:00, next to July's Wednesday 15th. Each month's models (demand, ETA, fares)
@@ -587,7 +607,7 @@ cancellation-aware cost, against instant nearest-driver:
 | Jan 2026 | 14.2% | −2.5 pp, +2.9% | −1.0 pp, +1.3% |
 
 The quiet January evening (2,939 requests in the 10% slice against 3,537 in October) has slack at 300 drivers, and
-on real roads batching does nothing from 400 drivers up. The rule from M1 holds on every day tested: the gain is
+on real roads batching does nothing from 400 drivers up. The rule from the synthetic city holds on every day tested: the gain is
 large when riders compete for drivers and gone when drivers wait for riders.
 
 **Coordinated repositioning helps in every month**, with the month's own demand model: at 500 drivers −1.9 to
@@ -602,9 +622,9 @@ the size of the batching gain follows how scarce drivers are that evening."
 
 ---
 
-# M6b: surge when drivers respond
+# Surge when drivers respond
 
-M6 found that surge only rations demand, and said why: the fleet was fixed. Published studies of Uber report that
+The first surge experiments found that surge only rations demand, and said why: the fleet was fixed. Published studies of Uber report that
 surge both brings drivers online and draws drivers toward it; no public data gives the size of either. So the
 simulator now has both, as parameters to vary (`SimConfig.supply`, off by default and then invisible, tested):
 
@@ -612,9 +632,9 @@ simulator now has both, as parameters to vary (`SimConfig.supply`, off by defaul
   offline driver in an area surged at multiplier m logs on with probability 1 − m^−ε, after a median 5 minutes, and
   logs off after 20 idle minutes once prices are back to normal.
 - **Chasing:** an idle driver heads for the best price within 10 minutes' drive, with probability strength × the
-  price gap, as an M7 move (dispatchable on the way; counts as empty driving).
+  price gap, as a repositioning move (dispatchable on the way; counts as empty driving).
 
-Same setup as M6 (rider elasticity 0.5), 6 seeds, on all six test days. Δ trips/h against no surge (medium
+Same setup as the first surge experiments (rider elasticity 0.5), 6 seeds, on all six test days. Δ trips/h against no surge (medium
 response: ε = 1, chase strength 0.5; full table `results/m6b_summary_report.md`):
 
 | day | 300 drivers: fixed fleet / chase only / log on / both | 500 drivers: surge, both / free repositioning |
@@ -643,15 +663,15 @@ are scarce, because demand, not supply, is the limit, and pricing it away costs 
 fleet it only prices riders out. When it pulls drivers online it's the best lever under scarcity (+8–11% trips,
 +33–67% driver earnings per hour). When drivers are already idle, moving them for free beats charging riders more."
 
-# M8d: every day of the test months, not one
+# Every day of the test months, not one
 
-M8c tested each month on one Wednesday evening. Was that day typical? Now every Wednesday evening of October 2025,
+The four-month test used one Wednesday evening per month. Was that day typical? Now every Wednesday evening of October 2025,
 January, April and July 2026 (19 days, 17:00-20:00), plus a Wednesday morning (07:00-10:00) and a Saturday night
 (20:00-23:00) in each month, 27 days in all. Each day: that month's models and travel calibration, 10% of Manhattan
-trips, straight-line travel, 6 seeds, the M2/M7/ETA/M6b experiments (`experiments/run_m8d_days.sh`; on the new days
+trips, straight-line travel, 6 seeds, the batching, repositioning, ETA and surge experiments (`experiments/run_m8d_days.sh`; on the new days
 the ETA experiment runs the learned ETA and its baselines at a 180 s tolerance only, since its world model makes a
 run ~2.5 min). Each effect is a per-day paired delta, then pooled with **days** as the units (Student t over days),
-so the interval now includes day-to-day variation, which the per-seed intervals of M8c could not.
+so the interval now includes day-to-day variation, which per-seed intervals on one day could not.
 Full tables: `results/m8d_summary_report.md`, per day `results/m8d_per_day.csv`.
 
 **Every Wednesday evening** (trips/h in % of the baseline; mean ± 95% CI over days [lowest..highest day]):
@@ -669,16 +689,16 @@ Full tables: `results/m8d_summary_report.md`, per day `results/m8d_per_day.csv`.
 
 **Every conclusion survives.** No effect reverses on any of the 19 evenings (the one non-positive day is batching
 at 500 drivers, −0.0, where its gain is ~0 anyway). The mornings and Saturday nights of all four months repeat
-what M8b found for July: in the morning peak batching gives little (+2.3% at 300, ±0 at 400-500) while
+what the July runs found: in the morning peak batching gives little (+2.3% at 300, ±0 at 400-500) while
 repositioning gives **+6.6% to +7.2%** and beats surge by +4.7%; on Saturday nights batching gives **+13%** at 300
 and the learned ETA **+12%**, the largest of any window.
 
 **But the sizes move a lot from day to day, more than between months.** Batching at 300 drivers ranges from +2.6%
 to +13.2% across evenings; within January, three Wednesdays gave about +3% and the 21st gave +11.7%. What sets it is
 how scarce drivers are that evening: across the 19 evenings the gain tracks the cancellation rate under instant
-dispatch (12% to 43%, a direct measure of scarcity) with a correlation of 0.97. That is M1's mechanism again,
+dispatch (12% to 43%, a direct measure of scarcity) with a correlation of 0.97. That is the synthetic city's mechanism again,
 now on real days. Repositioning and
-the learned ETA are steadier (2-3× range). So M8c's per-month numbers were each a sample of one day: M8c reported
+the learned ETA are steadier (2-3× range). So the four-month test's per-month numbers were each a sample of one day: it reported
 January as the quiet month (+3%), but that was its day, not its month. The pooled numbers above are the ones to
 quote.
 
@@ -686,7 +706,7 @@ quote.
 (batching, surge with responsive drivers) vary 2-5× between ordinary Wednesdays, and the effects that fix a
 systematic error (honest ETAs, repositioning) are steady."
 
-# M10: repositioning, driver supply and late cancels, live over Kafka
+# Repositioning, driver supply and late cancels, live over Kafka
 
 The last offline-only behaviours now run live: the matcher service plans repositioning (the same `plan_round` as
 the offline engine, on its own view of the fleet rebuilt from events) and sends moves on `reposition-moves`; the
@@ -695,7 +715,7 @@ a late driver). Lockstep runs (zero latency) are bit-identical to offline with e
 them at once, with 1 and 3 partitions and reordered delivery (`tests/test_m10.py`).
 
 Over a real Kafka broker (`experiments/m3_live_vs_offline.py --m10`; Wednesday 15 July 2026 evening, 500 drivers,
-optimal every 30 s, travel times with M7's noise, the matcher's plan on forecast demand every 5 min, riders who
+optimal every 30 s, travel times with the repositioning experiments' noise, the matcher's plan on forecast demand every 5 min, riders who
 give up on late drivers; 2 seeds; full table `results/m10_live_straight_report.md`):
 
 | mode | cancel % | Δ cancel pp | Δ wait s | Δ trips/h | late cancel % | moves / driver-h |
